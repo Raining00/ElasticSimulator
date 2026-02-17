@@ -1,0 +1,6 @@
+[submodule "extern/eigen"]
+	path = extern/eigen
+	url = https://gitlab.com/libeigen/eigen.git
+[submodule "extern/tetgen"]
+	path = extern/tetgen
+	url = https://codeberg.org/TetGen/TetGen.git

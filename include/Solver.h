@@ -1,6 +1,13 @@
 #pragma once
 #include "BaseStructure.hpp"
 
+enum EnergyType
+{
+    STVK = 0,
+    COROTATED = 1,
+    NEOHOOKEAN = 2
+};
+
 class ElasticitySolver
 {
 public:
@@ -11,6 +18,10 @@ public:
         float damping = 0.01f; // Damping factor
 		float dt = 1.f / 60.f; // Time step
 		unsigned int substeps = 10; // Number of substeps for the simulation
+        // lame parameters
+        float lambda = 0.0f; // First Lame parameter
+        float mu = 0.0f; // Second Lame parameter (shear modulus)
+        EnergyType energyType = STVK; // Type of elastic energy to use
 		float3 gravity = { 0.0f, -9.81f, 0.0f }; // Gravity vector
 		float3 boundary_min = { -10.0f, 0.0f, -10.0f }; // Minimum boundary for collision
 		float3 boundary_max = { 10.0f, 10.0f, 10.0f }; // Maximum boundary for collision

@@ -138,8 +138,8 @@ void extractSurfaceTriangles(
     };
 
     struct FaceInfo {
-        int a, b, c;   // 原始顺序
-        int opposite;  // 四面体中的对点
+        int a, b, c;   // original vertex indices of the face
+        int opposite;  // corresponding opposite vertex in the tet (the one not in the face)
     };
 
 	Mesh surfaceMesh;

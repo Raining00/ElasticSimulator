@@ -180,6 +180,10 @@ struct mat3 {
 			m[2], m[5], m[8]);
 	}
 
+	__host__ __device__ __forceinline__	static float trace(const mat3 &m) {
+		return m[0] + m[4] + m[8];
+	}
+
 	// Optimize I + A
 	__host__ __device__ __forceinline__	static mat3 addIdentity(const mat3 &A) {
 		return mat3(A[0] + 1.f, A[1], A[2],

@@ -32,6 +32,13 @@ bool ElasticitySolver::initialize(const std::vector<Tetrahedron>& tets, const st
 	CUDA_CHECK(cudaMalloc(&d_vertex_velocity, vertices.size() * sizeof(float3)));
 	// Initialize velocities to zero
 	std::vector<float3> zero_velocity(vertices.size(), make_float3(0.0f, 0.0f, 0.0f));
+	CUDA_CHECK(cudaMemcpy(d_vertex_velocity, zero_velocity.data(), vertices.size() * sizeof(float3), cudaMemcpyHostToDevice));
+
+    // mass initialization
+    CUDA_CHECK(cudaMalloc(&d_mass, vertices.size() * sizeof(float)));
+    // Initialize masses to zero (this would typically be computed based on density and volume)
+    std::vector<float> zero_mass(vertices.size(), 0.0f);
+    CUDA_CHECK(cudaMemcpy(d_mass, zero_mass.data(), vertices.size() * sizeof(float), cudaMemcpyHostToDevice));
     
     return true;
 }

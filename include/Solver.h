@@ -17,6 +17,7 @@ public:
         float poisson_ratio = 0.3f; // Poisson's ratio
         float damping = 0.01f; // Damping factor
 		float dt = 1.f / 60.f; // Time step
+        float density = 1000.0f; // Material density
 		unsigned int substeps = 10; // Number of substeps for the simulation
         // lame parameters
         float lambda = 0.0f; // First Lame parameter
@@ -32,11 +33,13 @@ public:
 
     bool initialize(const std::vector<Tetrahedron>& tets, const std::vector<float3>& vertices);
 
-    void solve() {}
+    void simulate(unsigned int total_frame = 30);
 
 protected:
     void ComputeTetInitVolume();
     void setParams();
+
+    void step();
 
 private:
     // host data
@@ -49,4 +52,5 @@ private:
     float3* d_vertex;
     float3* d_vertex_rest;
 	float3* d_vertex_velocity;
+    float* d_mass;
 };

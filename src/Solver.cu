@@ -2,7 +2,7 @@
 
 __constant__ ElasticitySolver::Parameters g_params;
 
-__global__ void ComputeTetInitVolumeKernel(Tetrahedron* d_tet, float3* d_vertex, int num_tets)
+__global__ void ComputeTetInitVolumeKernel(Tetrahedron* d_tet, float3* d_vertex, float* mass, int num_tets)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < num_tets)
@@ -17,6 +17,12 @@ __global__ void ComputeTetInitVolumeKernel(Tetrahedron* d_tet, float3* d_vertex,
         float volume = fabsf(dot(cross(v1 - v0, v2 - v0), v3 - v0)) / 6.0f;
         d_tet[idx].volume = volume;
 
+        float m = g_params.density * volume;
+        atomicAdd(&mass[tet.verticesIndex.x], m * 0.25f);
+        atomicAdd(&mass[tet.verticesIndex.y], m * 0.25f);
+        atomicAdd(&mass[tet.verticesIndex.z], m * 0.25f);
+        atomicAdd(&mass[tet.verticesIndex.w], m * 0.25f);
+        
         // Compute the rest state matrix Dm and its inverse
         float3 Dm_col0 = v1 - v0;
         float3 Dm_col1 = v2 - v0;
@@ -75,11 +81,15 @@ void computeElasticForces(
 
     Tetrahedron tet = d_tet[idx];
 
+    int v0_idx = tet.verticesIndex.x;
+    int v1_idx = tet.verticesIndex.y;
+    int v2_idx = tet.verticesIndex.z;
+    int v3_idx = tet.verticesIndex.w;
     // === current positions ===
-    float3 x0 = d_vertex[tet.verticesIndex.x];
-    float3 x1 = d_vertex[tet.verticesIndex.y];
-    float3 x2 = d_vertex[tet.verticesIndex.z];
-    float3 x3 = d_vertex[tet.verticesIndex.w];
+    float3 x0 = d_vertex[v0_idx];
+    float3 x1 = d_vertex[v1_idx];
+    float3 x2 = d_vertex[v2_idx];
+    float3 x3 = d_vertex[v3_idx];
 
     // === deformation gradient ===
     mat3 Ds(x1 - x0, x2 - x0, x3 - x0);
@@ -146,11 +156,32 @@ void computeElasticForces(
     // ===============================
     // Atomic add to global force array
     // ===============================
+    atomicAdd(&d_force[tet.verticesIndex.x].x, f0.x);
+    atomicAdd(&d_force[tet.verticesIndex.x].y, f0.y);
+    atomicAdd(&d_force[tet.verticesIndex.x].z, f0.z);
+    atomicAdd(&d_force[tet.verticesIndex.y].x, f1.x);
+    atomicAdd(&d_force[tet.verticesIndex.y].y, f1.y);
+    atomicAdd(&d_force[tet.verticesIndex.y].z, f1.z);
+    atomicAdd(&d_force[tet.verticesIndex.z].x, f2.x);
+    atomicAdd(&d_force[tet.verticesIndex.z].y, f2.y);
+    atomicAdd(&d_force[tet.verticesIndex.z].z, f2.z);
+    atomicAdd(&d_force[tet.verticesIndex.w].x, f3.x);
+    atomicAdd(&d_force[tet.verticesIndex.w].y, f3.y);
+    atomicAdd(&d_force[tet.verticesIndex.w].z, f3.z);
+}
 
-    atomicAddVec3(&d_force[tet.verticesIndex.x], f0);
-    atomicAddVec3(&d_force[tet.verticesIndex.y], f1);
-    atomicAddVec3(&d_force[tet.verticesIndex.z], f2);
-    atomicAddVec3(&d_force[tet.verticesIndex.w], f3);
+__global__ void integrate(float3* position, float3* velocity, float3* force, float* mass, int num_vertices)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_vertices)
+        return;
+
+    // Semi-implicit Euler integration
+    velocity[idx] += (force[idx] / mass[idx]) * g_params.dt;
+    position[idx] += (velocity[idx] * g_params.dt);
+
+    // Reset force for the next iteration
+    force[idx] = make_float3(0.0f, 0.0f, 0.0f);
 }
 
 void ElasticitySolver::setParams()
@@ -167,6 +198,42 @@ void ElasticitySolver::ComputeTetInitVolume()
     int num_tets = h_tet.size();
     int threadsPerBlock = 256;
     int blocksPerGrid = (num_tets + threadsPerBlock - 1) / threadsPerBlock;
-    ComputeTetInitVolumeKernel<<<blocksPerGrid, threadsPerBlock>>>(d_tet, d_vertex, num_tets);
+    ComputeTetInitVolumeKernel<<<blocksPerGrid, threadsPerBlock>>>(d_tet, d_vertex, d_mass, num_tets);
+    cudaDeviceSynchronize();
+}
+
+void ElasticitySolver::simulate(unsigned int total_frame)
+{
+    unsigned int current_frame = 0;
+
+    printf("Start simulation...\n");
+    while (current_frame < total_frame)
+    {
+        for (int i = 0; i < h_params.substeps; i++)
+            this->step();
+        current_frame++;
+        printf("Frame %d / %d\n", current_frame, total_frame);
+    }
+    printf("Simulation finished.\n");
+}
+
+void ElasticitySolver::step()
+{
+    // forward Euler step
+    int num_vertices = h_vertex.size();
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (num_vertices + threadsPerBlock - 1) / threadsPerBlock;
+    forward<<<blocksPerGrid, threadsPerBlock>>>(d_vertex, d_vertex_velocity);
+    cudaDeviceSynchronize();
+
+    // compute elastic forces
+    int num_tets = h_tet.size();
+    blocksPerGrid = (num_tets + threadsPerBlock - 1) / threadsPerBlock;
+    computeElasticForces<<<blocksPerGrid, threadsPerBlock>>>(d_tet, d_vertex, d_vertex_velocity, num_tets);
+    cudaDeviceSynchronize();
+
+    // integrate
+    blocksPerGrid = (num_vertices + threadsPerBlock - 1) / threadsPerBlock;
+    integrate<<<blocksPerGrid, threadsPerBlock>>>(d_vertex, d_vertex_velocity, d_vertex_velocity, d_mass, num_vertices);
     cudaDeviceSynchronize();
 }

@@ -31,21 +31,26 @@ public:
     ElasticitySolver() = default;
     ~ElasticitySolver();
 
-    bool initialize(const std::vector<Tetrahedron>& tets, const std::vector<float3>& vertices);
+    void Initialize(const Mesh& mesh);
 
-    void simulate(unsigned int total_frame = 30);
+    void Simulate(unsigned int total_frame = 30);
+
+    void SetInitialOffset(const float3& offset);
+    void ExportMesh(unsigned int frame);
 
 protected:
-    void ComputeTetInitVolume();
-    void setParams();
+    bool DataTransfer(const std::vector<Tetrahedron>& tets, const std::vector<float3>& vertices);
 
-    void step();
+    void ComputeTetInitVolume();
+    void SetParams();
+    void Step();
 
 private:
     // host data
     std::vector<Tetrahedron> h_tet;
     std::vector<float3> h_vertex;
 	Parameters h_params;
+    Mesh suraceMesh;
 
     //device data
     Tetrahedron* d_tet;

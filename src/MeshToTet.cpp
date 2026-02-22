@@ -116,7 +116,8 @@ void tetrahedralizeMesh(const Mesh& mesh,
 
 void extractSurfaceTriangles(
     const std::vector<Tetrahedron>& tets,
-    const std::vector<float3>& vertices)
+    const std::vector<float3>& vertices,
+    Mesh& surfaceMesh)
 {
     struct FaceKey {
         int v[3];
@@ -142,7 +143,6 @@ void extractSurfaceTriangles(
         int opposite;  // corresponding opposite vertex in the tet (the one not in the face)
     };
 
-	Mesh surfaceMesh;
     std::map<FaceKey, int> faceCount;
     std::map<FaceKey, FaceInfo> faceMap;
 
@@ -208,5 +208,5 @@ void extractSurfaceTriangles(
     
     printf("Extrace surface %d triangles\n", surfaceMesh.faces.size());
    
-	saveOBJ("D:/Code/ElasticSimulator/surface_mesh.obj", surfaceMesh);
+	// saveOBJ("D:/Code/ElasticSimulator/surface_mesh.obj", surfaceMesh);
 }

@@ -6,6 +6,7 @@ class tetgenio;
 struct Tetrahedron;
 
 bool loadOBJ(const std::string& filename, Mesh& mesh);
+void saveOBJ(const std::string& filename, const Mesh& mesh);
 
 void buildTetgenInput(const Mesh& mesh, tetgenio& in);
 
@@ -15,4 +16,6 @@ void tetrahedralizeMesh(const Mesh& mesh,
 
 void extractSurfaceTriangles(
     const std::vector<Tetrahedron>& tets,
-    const std::vector<float3>& vertices);
+    const std::vector<float3>& vertices,
+    Mesh& surfaceMesh
+);

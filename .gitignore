@@ -14,3 +14,5 @@ mono_crash.*
 # Build results
 build/
 .vscode/
+output/
+bin/

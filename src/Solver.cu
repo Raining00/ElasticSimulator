@@ -1,6 +1,16 @@
 #include "../include/Solver.h"
+#include "../include/decomposition.hpp"
 
 __constant__ ElasticitySolver::Parameters g_params;
+
+__global__ void setInitialOffsetKernel(float3* d_vertex, float3 offset, int num_vertices)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < num_vertices)
+    {
+        d_vertex[idx] = d_vertex[idx] + offset;
+    }
+}
 
 __global__ void ComputeTetInitVolumeKernel(Tetrahedron* d_tet, float3* d_vertex, float* mass, int num_tets)
 {
@@ -111,21 +121,20 @@ void computeElasticForces(
                  + 2.0f * mu * E;
         P = F * S;
     }
-    // else if (g_params.energyType == COROTATED)
-    // {
-    //     // SVD
-    //     mat3 U, V;
-    //     float3 sigma;
-    //     svd(F, U, sigma, V);
+    else if (g_params.energyType == COROTATED)
+    {
+        // SVD
+        mat3 U, V, S;
+        computeSVD(F, U, S, V); 
 
-    //     mat3 R = U * mat3::transpose(V);
+        mat3 R = U * mat3::transpose(V);
 
-    //     float trace_term =
-    //         mat3::trace(mat3::transpose(R) * F - mat3(1.0));
+        float trace_term =
+            mat3::trace(mat3::transpose(R) * F - mat3(1.0));
 
-    //     P = 2.0f * mu * (F - R)
-    //         + lambda * trace_term * R;
-    // }
+        P = 2.0f * mu * (F - R)
+            + lambda * trace_term * R;
+    }
     else if (g_params.energyType == NEOHOOKEAN)
     {
         float J = mat3::determinant(F);
@@ -156,18 +165,18 @@ void computeElasticForces(
     // ===============================
     // Atomic add to global force array
     // ===============================
-    atomicAdd(&d_force[tet.verticesIndex.x].x, f0.x);
-    atomicAdd(&d_force[tet.verticesIndex.x].y, f0.y);
-    atomicAdd(&d_force[tet.verticesIndex.x].z, f0.z);
-    atomicAdd(&d_force[tet.verticesIndex.y].x, f1.x);
-    atomicAdd(&d_force[tet.verticesIndex.y].y, f1.y);
-    atomicAdd(&d_force[tet.verticesIndex.y].z, f1.z);
-    atomicAdd(&d_force[tet.verticesIndex.z].x, f2.x);
-    atomicAdd(&d_force[tet.verticesIndex.z].y, f2.y);
-    atomicAdd(&d_force[tet.verticesIndex.z].z, f2.z);
-    atomicAdd(&d_force[tet.verticesIndex.w].x, f3.x);
-    atomicAdd(&d_force[tet.verticesIndex.w].y, f3.y);
-    atomicAdd(&d_force[tet.verticesIndex.w].z, f3.z);
+    atomicAdd(&d_force[v0_idx].x, f0.x);
+    atomicAdd(&d_force[v0_idx].y, f0.y);
+    atomicAdd(&d_force[v0_idx].z, f0.z);
+    atomicAdd(&d_force[v1_idx].x, f1.x);
+    atomicAdd(&d_force[v1_idx].y, f1.y);
+    atomicAdd(&d_force[v1_idx].z, f1.z);
+    atomicAdd(&d_force[v2_idx].x, f2.x);
+    atomicAdd(&d_force[v2_idx].y, f2.y);
+    atomicAdd(&d_force[v2_idx].z, f2.z);
+    atomicAdd(&d_force[v3_idx].x, f3.x);
+    atomicAdd(&d_force[v3_idx].y, f3.y);
+    atomicAdd(&d_force[v3_idx].z, f3.z);
 }
 
 __global__ void integrate(float3* position, float3* velocity, float3* force, float* mass, int num_vertices)
@@ -184,12 +193,21 @@ __global__ void integrate(float3* position, float3* velocity, float3* force, flo
     force[idx] = make_float3(0.0f, 0.0f, 0.0f);
 }
 
-void ElasticitySolver::setParams()
+void ElasticitySolver::SetParams()
 {
     this->h_params.lambda = (this->h_params.youngs_modulus * this->h_params.poisson_ratio) / ((1 + this->h_params.poisson_ratio) * (1 - 2 * this->h_params.poisson_ratio));
     this->h_params.mu = this->h_params.youngs_modulus / (2 * (1 + this->h_params.poisson_ratio));
     this->h_params.dt = 1.f / 60.f / this->h_params.substeps;
     cudaMemcpyToSymbol((void*) &g_params, &(this->h_params), sizeof(Parameters));
+}
+
+void ElasticitySolver::SetInitialOffset(const float3& offset)
+{
+    int num_vertices = h_vertex.size();
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (num_vertices + threadsPerBlock - 1) / threadsPerBlock;
+    setInitialOffsetKernel<<<blocksPerGrid, threadsPerBlock>>>(d_vertex, offset, num_vertices);
+    cudaDeviceSynchronize();
 }
 
 void ElasticitySolver::ComputeTetInitVolume()
@@ -202,7 +220,7 @@ void ElasticitySolver::ComputeTetInitVolume()
     cudaDeviceSynchronize();
 }
 
-void ElasticitySolver::simulate(unsigned int total_frame)
+void ElasticitySolver::Simulate(unsigned int total_frame)
 {
     unsigned int current_frame = 0;
 
@@ -210,14 +228,14 @@ void ElasticitySolver::simulate(unsigned int total_frame)
     while (current_frame < total_frame)
     {
         for (int i = 0; i < h_params.substeps; i++)
-            this->step();
+            this->Step();
         current_frame++;
         printf("Frame %d / %d\n", current_frame, total_frame);
     }
     printf("Simulation finished.\n");
 }
 
-void ElasticitySolver::step()
+void ElasticitySolver::Step()
 {
     // forward Euler step
     int num_vertices = h_vertex.size();

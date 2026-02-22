@@ -1,5 +1,6 @@
 #include "Solver.h"
 #include "iostream"
+#include "../include/MeshToTet.hpp"
 
 #define CUDA_CHECK(call) \
     do { \
@@ -11,12 +12,8 @@
         } \
     } while (0)
 
-bool ElasticitySolver::initialize(const std::vector<Tetrahedron>& tets, const std::vector<float3>& vertices)
+bool ElasticitySolver::DataTransfer(const std::vector<Tetrahedron>& tets, const std::vector<float3>& vertices)
 {
-    // Store data on host
-    h_tet = tets;
-    h_vertex = vertices;
-
     // Allocate and copy data to GPU
     CUDA_CHECK(cudaMalloc(&d_tet, tets.size() * sizeof(Tetrahedron)));
     CUDA_CHECK(cudaMemcpy(d_tet, tets.data(), tets.size() * sizeof(Tetrahedron), cudaMemcpyHostToDevice));
@@ -43,6 +40,25 @@ bool ElasticitySolver::initialize(const std::vector<Tetrahedron>& tets, const st
     return true;
 }
 
+void ElasticitySolver::Initialize(const Mesh& mesh)
+{
+    // This function would convert the Mesh data into the format needed for the solver
+    // For simplicity, we assume the Mesh class has methods
+    tetrahedralizeMesh(mesh, h_tet, h_vertex);
+    printf("Generated %lu tetrahedra and %lu vertices.\n", h_tet.size(), h_vertex.size());
+    extractSurfaceTriangles(h_tet, h_vertex, suraceMesh);
+    DataTransfer(h_tet, h_vertex);
+}
+
+
+void ElasticitySolver::ExportMesh(unsigned int frame)
+{
+    // Copy vertex data back to host and update the surface mesh vertices
+    CUDA_CHECK(cudaMemcpy(this->suraceMesh.vertices.data(), d_vertex, h_vertex.size() * sizeof(float3), cudaMemcpyDeviceToHost));
+    // The faces of the surface mesh remain unchanged, so we can directly save it
+    std::string filename = "D:/Code/ElasticSimulator/output/frame_" + std::to_string(frame) + ".obj";
+    saveOBJ(filename, suraceMesh);
+}
 
 ElasticitySolver::~ElasticitySolver()
 {
@@ -50,4 +66,6 @@ ElasticitySolver::~ElasticitySolver()
     cudaFree(d_tet);
     cudaFree(d_vertex);
     cudaFree(d_vertex_rest);
+    cudaFree(d_vertex_velocity);
+    cudaFree(d_mass);
 }

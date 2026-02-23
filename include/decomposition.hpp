@@ -14,6 +14,18 @@ __host__ __device__ __forceinline__ void computeSVD(const mat3& A, mat3& W, mat3
 		W[0], W[3], W[6], W[1], W[4], W[7], W[2], W[5], W[8],
 		S[0], S[3], W[6], S[1], S[4], S[7], S[2], S[5], S[8],
 		V[0], V[3], V[6], V[1], V[4], V[7], V[2], V[5], V[8]);
+
+	// Rotation-variant SVD
+	mat3 L(1.0);
+	L[8] = mat3::determinant(mat3::multiplyABt(W, V));
+
+	float detU = mat3::determinant(W);
+	float detV = mat3::determinant(V);
+	if(detU < 0 && detV > 0)
+		W = W * L;
+	else if(detU > 0 && detV < 0)
+		V = V * L;
+	S = S * L;
 }
 
 /*

@@ -67,6 +67,7 @@ struct mat3 {
 
 	__host__ __device__ __forceinline__ float& operator [] (int i) { return data[i]; }
 	__host__ __device__ __forceinline__ float  operator [] (int i) const { return data[i]; }
+	__host__ __device__ __forceinline__ float& operator () (int i, int j) { return data[i + 3 * j]; }
 
 	__host__ __device__ __forceinline__	float3 row(int i) const { 
 		return make_float3(data[i], data[i + 3], data[i + 6]);

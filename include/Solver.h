@@ -13,10 +13,10 @@ class ElasticitySolver
 public:
     struct Parameters
     {
-        float youngs_modulus = 1000.0f; // Young's modulus
-        float poisson_ratio = 0.3f; // Poisson's ratio
+        float youngs_modulus = 1e4; // Young's modulus
+        float poisson_ratio = 0.2f; // Poisson's ratio
         float damping = 0.01f; // Damping factor
-		float dt = 1.f / 60.f; // Time step
+		float dt = 1.f / 100.f; // Time step
         float density = 1000.0f; // Material density
 		unsigned int substeps = 10; // Number of substeps for the simulation
         // lame parameters
@@ -33,7 +33,7 @@ public:
 
     void Initialize(const Mesh& mesh);
 
-    void Simulate(unsigned int total_frame = 30);
+    void Simulate(unsigned int total_frame = 30, bool export_results = true);
 
     void SetInitialOffset(const float3& offset);
     void ExportMesh(unsigned int frame);
@@ -45,17 +45,20 @@ protected:
     void SetParams();
     void Step();
 
+    void PrintInfo() const;
+
 private:
     // host data
     std::vector<Tetrahedron> h_tet;
     std::vector<float3> h_vertex;
+    std::vector<float3> h_force; //debug
 	Parameters h_params;
     Mesh suraceMesh;
 
     //device data
     Tetrahedron* d_tet;
     float3* d_vertex;
-    float3* d_vertex_rest;
 	float3* d_vertex_velocity;
+    float3* d_force;
     float* d_mass;
 };

@@ -49,6 +49,8 @@ void ElasticitySolver::Initialize(const Mesh& mesh)
 
     extractSurfaceTriangles(h_tet, h_vertex, suraceMesh);
     DataTransfer(h_tet, h_vertex);
+    params_ready = false;
+    info_printed = false;
 
     ComputeTetInitVolume();
 }
@@ -88,4 +90,19 @@ ElasticitySolver::~ElasticitySolver()
     cudaFree(d_vertex_velocity);
     cudaFree(d_mass);
     cudaFree(d_force);
+}
+
+const Mesh& ElasticitySolver::GetSurfaceMesh() const
+{
+    return suraceMesh;
+}
+
+const float3* ElasticitySolver::GetDeviceVertices() const
+{
+    return d_vertex;
+}
+
+size_t ElasticitySolver::GetVertexCount() const
+{
+    return h_vertex.size();
 }

@@ -7,3 +7,6 @@
 [submodule "extern/svd3"]
 	path = extern/svd3
 	url = https://github.com/ericjang/svd3.git
+[submodule "extern/glfw"]
+	path = extern/glfw
+	url = https://github.com/glfw/glfw.git

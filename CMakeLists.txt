@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(CUDAToolkit REQUIRED)
+find_package(OpenGL REQUIRED)
 enable_language(CUDA)
     
 set(CMAKE_CUDA_STANDARD 17)
@@ -23,6 +24,10 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # external dependencies
 add_subdirectory(extern/tetgen)
+# GLFW
+add_subdirectory(extern/glfw)
+# GLM
+add_subdirectory(extern/glm)
 
 # set source files
 file(GLOB_RECURSE SRC_FILES 
@@ -32,10 +37,10 @@ file(GLOB_RECURSE SRC_FILES
     include/*.hpp
 )
 
-include_directories(include extern)
+include_directories(include extern extern/glm extern/glfw/deps)
 add_executable(ElasticSimulator ${SRC_FILES} main.cpp)
 
-target_link_libraries(ElasticSimulator PRIVATE CUDA::cudart tet)
+target_link_libraries(ElasticSimulator PRIVATE CUDA::cudart tet glfw OpenGL::GL)
 set_target_properties(ElasticSimulator PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON)
 

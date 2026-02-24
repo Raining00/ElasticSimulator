@@ -89,7 +89,7 @@ void tetrahedralizeMesh(const Mesh& mesh,
 
     buildTetgenInput(mesh, in);
 
-    char tetgenOptions[] = "pq1.2a0.1"; // quality mesh with max volume 0.1
+    char tetgenOptions[] = "pq1.5/20Y"; 
     tetrahedralize(tetgenOptions, &in, &out);
 
     // vertices
@@ -198,9 +198,9 @@ void extractSurfaceTriangles(
         double dot = normal.x * ad.x + normal.y * ad.y + normal.z * ad.z;
 
         if (dot > 0) {
-            surfaceMesh.faces.push_back({ make_int3(info.a, info.c, info.b) });
-        } else {
             surfaceMesh.faces.push_back({ make_int3(info.a, info.b, info.c) });
+        } else {
+            surfaceMesh.faces.push_back({ make_int3(info.a, info.c, info.b) });
         }
     }
 

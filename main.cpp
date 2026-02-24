@@ -1,6 +1,7 @@
 #include <iostream>
 #include "include/MeshToTet.hpp"
 #include "include/Solver.h"
+#include "include/RealtimeViewer.h"
 
 void scaleMesh(Mesh& mesh, float scale)
 {
@@ -13,25 +14,31 @@ void scaleMesh(Mesh& mesh, float scale)
 
 int main()
 {
-    float3 a = make_float3(1.0f, 2.0f, 3.0f);
-    float3 b = make_float3(4.0f, 5.0f, 6.0f);
-    float3 c = a + b;
-
-	Mesh mesh, surfaceMesh;
+	Mesh mesh;
     ElasticitySolver solver;
+    RealtimeViewer viewer;
 
-	std::vector<Tetrahedron> tets;
-	std::vector<float3> vertices;
-    if (loadOBJ("D:/Code/ElasticSimulator/bunny.obj", mesh)) {
-        std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
-		scaleMesh(mesh, 100);
-        saveOBJ("D:/Code/ElasticSimulator/bunny_scaled.obj", mesh); 
-        solver.Initialize(mesh);
-		solver.SetInitialOffset(make_float3(0.0f, 0.2f, 0.0f)); // Set an initial offset for the simulation
-        solver.Simulate(5);
-    } else {
+    if (!loadOBJ("D:/Code/ElasticSimulator/sphere.obj", mesh)) {
         std::cerr << "Failed to load mesh." << std::endl;
+        return 1;
 	}
 
-    std::cout << "Result of a + b: (" << c.x << ", " << c.y << ", " << c.z << ")" << std::endl;
+    std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
+
+    solver.Initialize(mesh);
+    solver.SetInitialOffset(make_float3(0.0f, 0.3f, 0.0f));
+
+    if (!viewer.Initialize(solver.GetSurfaceMesh(), 1280, 720)) {
+        std::cerr << "Failed to initialize realtime viewer." << std::endl;
+        return 1;
+    }
+
+    while (!viewer.ShouldClose()) {
+        solver.SimulateFrame(false);
+        viewer.UpdateFromCuda(solver.GetDeviceVertices(), solver.GetVertexCount());
+        viewer.RenderFrame();
+        viewer.PollEvents();
+    }
+
+    return 0;
 }

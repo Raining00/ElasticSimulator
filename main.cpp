@@ -22,9 +22,9 @@ int main()
         std::cerr << "Failed to load mesh." << std::endl;
         return 1;
 	}
+	scaleMesh(mesh, 3.0f);
 
     std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
-
     solver.Initialize(mesh);
     solver.SetInitialOffset(make_float3(0.0f, 0.3f, 0.0f));
 

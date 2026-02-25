@@ -1,6 +1,7 @@
 #include "../include/MeshToTet.hpp"
 #include <fstream>
 #include <sstream>
+#include <iostream>
 #include <map>
 #include <array>
 #include <algorithm>
@@ -8,28 +9,42 @@
 #define TETLIBRARY
 #include "tetgen/tetgen.h"
 
+#define TINYOBJLOADER_IMPLEMENTATION
+#include "../include/tiny_obj_loader.h"
+
 bool loadOBJ(const std::string& filename, Mesh& mesh) {
     std::ifstream in(filename);
     if (!in.is_open()) return false;
-
-    std::string line;
-    while (std::getline(in, line)) {
-        std::stringstream ss(line);
-        std::string tag;
-        ss >> tag;
-
-        if (tag == "v") {
-            float3 v;
-            ss >> v.x >> v.y >> v.z;
-            mesh.vertices.push_back(v);
-        }
-        else if (tag == "f") {
-            Triangle f;
-            ss >> f.verticesIndex.x >> f.verticesIndex.y >> f.verticesIndex.z;
-            f.verticesIndex.x -= 1; // OBJ is 1-based
-            f.verticesIndex.y -= 1;
-            f.verticesIndex.z -= 1;
-            mesh.faces.push_back(f);
+    tinyobj::attrib_t attrib;
+    std::vector<tinyobj::shape_t> shapes;
+    std::vector<tinyobj::material_t> materials;
+    std::string warn, err;
+    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, filename.c_str())) {
+        std::cerr << warn << err << std::endl;
+        return false;
+    }
+    for (size_t i = 0; i < attrib.vertices.size(); i += 3) {
+        mesh.vertices.push_back(make_float3(
+            attrib.vertices[i + 0],
+            attrib.vertices[i + 1],
+            attrib.vertices[i + 2]
+        ));
+    }
+    // faces
+    for (const auto& shape : shapes) {
+        size_t index_offset = 0;
+        for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {
+            int fv = shape.mesh.num_face_vertices[f];
+            if (fv != 3) {
+                std::cerr << "Non-triangle face found. Skipping." << std::endl;
+                index_offset += fv;
+                continue;
+            }
+            tinyobj::index_t idx0 = shape.mesh.indices[index_offset + 0];
+            tinyobj::index_t idx1 = shape.mesh.indices[index_offset + 1];
+            tinyobj::index_t idx2 = shape.mesh.indices[index_offset + 2];
+            mesh.faces.push_back({ make_int3(idx0.vertex_index, idx1.vertex_index, idx2.vertex_index) });
+            index_offset += fv;
         }
     }
     return true;

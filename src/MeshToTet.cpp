@@ -1,4 +1,4 @@
-#include "../include/MeshToTet.hpp"
+#include "MeshToTet.hpp"
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -10,7 +10,7 @@
 #include "tetgen/tetgen.h"
 
 #define TINYOBJLOADER_IMPLEMENTATION
-#include "../include/tiny_obj_loader.h"
+#include "tiny_obj_loader.h"
 
 bool loadOBJ(const std::string& filename, Mesh& mesh) {
     std::ifstream in(filename);

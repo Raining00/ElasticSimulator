@@ -43,6 +43,3 @@ add_executable(ElasticSimulator ${SRC_FILES} main.cpp)
 target_link_libraries(ElasticSimulator PRIVATE CUDA::cudart tet glfw OpenGL::GL)
 set_target_properties(ElasticSimulator PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON)
-
-# add any required libraries here
-# target_link_libraries(ElasticSimulator <libraries>)

@@ -1,4 +1,4 @@
-#include "RealtimeViewer.h"
+#include "render/RealtimeViewer.h"
 
 #define GLAD_GL_IMPLEMENTATION
 #include <glad/gl.h>

@@ -8,7 +8,7 @@
 #define GLM_FORCE_RADIANS
 #endif
 
-#include "quaternion.hpp"
+#include "math/quaternion.hpp"
 
 struct mat3 {
 	float data[9];

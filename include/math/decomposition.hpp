@@ -2,8 +2,8 @@
 
 #include <cuda_runtime.h>
 
-#include "matrix.hpp"
-#include "helper_math.h"
+#include "math/matrix.hpp"
+#include "math/helper_math.h"
 
 #include "svd3/svd3_cuda/svd3_cuda.h"
 

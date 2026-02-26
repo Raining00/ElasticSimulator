@@ -1,7 +1,7 @@
 #pragma once
 
-#include "helper_math.h"
-#include "matrix.hpp"
+#include "math/helper_math.h"
+#include "math/matrix.hpp"
 #include <vector>
 
 struct Triangle {

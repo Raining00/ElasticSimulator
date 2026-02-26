@@ -14,9 +14,8 @@
  */
 
 #include "Solver.h"
-#include "decomposition.hpp"
+#include "math/decomposition.hpp"
 #include "iostream"
-#include "../include/MeshToTet.hpp"
 
  // ─────────────────────────────────────────────────────────────────────────────
  // Helpers
@@ -408,58 +407,3 @@ void ElasticitySolver::Step()
         d_vertex, d_vertex_velocity, numVerts);
     CUDA_CHECK(cudaGetLastError());
 }
-
-// ─── Main simulation loop ──────────────────────────────────────────────────
-
-void ElasticitySolver::Simulate(unsigned int total_frame, bool export_results)
-{
-    if (!params_ready) {
-        SetParams();
-        params_ready = true;
-    }
-    if (!info_printed) {
-        PrintInfo();
-        info_printed = true;
-    }
-
-    std::cout << "Starting simulation: " << total_frame << " frames, "
-        << h_params.substeps << " substeps/frame." << std::endl;
-
-    for (unsigned int frame = 0; frame < total_frame; ++frame) {
-        for (unsigned int sub = 0; sub < h_params.substeps; ++sub) {
-            Step();
-        }
-        CUDA_CHECK(cudaDeviceSynchronize());
-
-        std::cout << "Frame " << frame << " done." << std::endl;
-
-        if (export_results) {
-            ExportMesh(frame);
-        }
-    }
-
-    std::cout << "Simulation complete." << std::endl;
-}
-
-void ElasticitySolver::SimulateFrame(bool export_result)
-{
-    if (!params_ready) {
-        SetParams();
-        params_ready = true;
-    }
-    if (!info_printed) {
-        PrintInfo();
-        info_printed = true;
-    }
-
-    for (unsigned int sub = 0; sub < h_params.substeps; ++sub) {
-        Step();
-    }
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    if (export_result) {
-        static unsigned int frame_id = 0;
-        ExportMesh(frame_id++);
-    }
-}
-

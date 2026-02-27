@@ -17,6 +17,11 @@ set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets")
 
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --extended-lambda")
 
+configure_file(
+    ${CMAKE_SOURCE_DIR}/assets/ProjectPaths.h.in
+    ${CMAKE_BINARY_DIR}/generated/ProjectPaths.h
+)
+
 # set output directories
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -37,9 +42,29 @@ file(GLOB_RECURSE SRC_FILES
     include/*.hpp
 )
 
-include_directories(include extern extern/glm extern/glfw/deps)
-add_executable(ElasticSimulator ${SRC_FILES} main.cpp)
+add_executable(ElasticSimulator
+    ${SRC_FILES}
+    main.cpp
+)
 
-target_link_libraries(ElasticSimulator PRIVATE CUDA::cudart tet glfw OpenGL::GL)
+# include directories
+target_include_directories(ElasticSimulator
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/extern
+        ${CMAKE_CURRENT_SOURCE_DIR}/extern/glm
+        ${CMAKE_CURRENT_SOURCE_DIR}/extern/glfw/deps
+        ${CMAKE_BINARY_DIR}/generated
+)
+
+target_link_libraries(ElasticSimulator
+    PRIVATE
+        CUDA::cudart
+        tet
+        glfw
+        OpenGL::GL
+)
+
 set_target_properties(ElasticSimulator PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON)
+    CUDA_SEPARABLE_COMPILATION ON
+)

@@ -2,6 +2,7 @@
 #include "MeshToTet.hpp"
 #include "Solver.h"
 #include "render/RealtimeViewer.h"
+#include "ProjectPaths.h"
 
 void scaleMesh(Mesh& mesh, float scale)
 {
@@ -18,7 +19,7 @@ int main()
     ElasticitySolver solver;
     RealtimeViewer viewer;
 
-    if (!loadOBJ("D:/Code/ElasticSimulator/assets/sphere.obj", mesh)) {
+    if (!loadOBJ(PROJECT_SOURCE_DIR "/assets/sphere.obj", mesh)) {
         std::cerr << "Failed to load mesh." << std::endl;
         return 1;
 	}

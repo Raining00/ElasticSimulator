@@ -14,7 +14,7 @@ class ElasticitySolver
 public:
     struct Parameters
     {
-        float youngs_modulus = 1e5; // Young's modulus
+        float youngs_modulus = 1e6; // Young's modulus
         float poisson_ratio = 0.45f; // Poisson's ratio
         float damping = 0.0f; // Damping factor
 		float dt = 1e-4; // Time step

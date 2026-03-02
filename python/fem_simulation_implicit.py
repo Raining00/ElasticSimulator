@@ -829,3 +829,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# python fem_simulation_implicit.py --model neohookean --gui

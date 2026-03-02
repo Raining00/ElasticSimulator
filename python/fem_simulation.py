@@ -444,10 +444,25 @@ class FEMSimulator:
 
     @ti.func
     def _pk1_neohookean(self, F: ti.template()) -> ti.Matrix:
-        """Stable Neo-Hookean: P = μ(F - F^{-T}) + λ(J-1)JF^{-T}"""
         mu  = self.mu_field[None]
         lam = self.lam_field[None]
         J = F.determinant()
+        """BW08 Neo-Hookean: P = μ(F - 1 / J \partial J / \partial F) + λ log(J) / J \partial J / \partial F
+        where J = det(F)"""
+        # dJdF = ti.Matrix.zero(ti.f32, 3, 3)
+        # f1 = ti.Vector([F[0, 0], F[1, 0], F[2, 0]])
+        # f2 = ti.Vector([F[0, 1], F[1, 1], F[2, 1]])
+        # f3 = ti.Vector([F[0, 2], F[1, 2], F[2, 2]])
+        # col1 = ti.math.cross(f2, f3)
+        # col2 = ti.math.cross(f3, f1)
+        # col3 = ti.math.cross(f1, f2)
+        # for i in range(3):
+        #     dJdF[i, 0] = col1[i]
+        #     dJdF[i, 1] = col2[i]
+        #     dJdF[i, 2] = col3[i]
+        # P = mu * (F - dJdF / J) + lam * ti.math.log(J) * dJdF / J
+
+        """Stable Neo-Hookean(Smith et al. 2018): P = μ(F - F^{-T}) + λ log(J) F^{-T}"""
         Finv_T = F.inverse().transpose()
         P = mu * (F - Finv_T) + lam * (J - 1.0) * J * Finv_T
         return P

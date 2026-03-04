@@ -14,53 +14,65 @@
 
 bool ElasticitySolver::DataTransfer(const std::vector<Tetrahedron>& tets, const std::vector<float3>& vertices)
 {
-    // Allocate and copy data to GPU
     CUDA_CHECK(cudaMalloc(&d_tet, tets.size() * sizeof(Tetrahedron)));
     CUDA_CHECK(cudaMemcpy(d_tet, tets.data(), tets.size() * sizeof(Tetrahedron), cudaMemcpyHostToDevice));
 
     CUDA_CHECK(cudaMalloc(&d_vertex, vertices.size() * sizeof(float3)));
     CUDA_CHECK(cudaMemcpy(d_vertex, vertices.data(), vertices.size() * sizeof(float3), cudaMemcpyHostToDevice));
 
-	// velocity initialization
-	CUDA_CHECK(cudaMalloc(&d_vertex_velocity, vertices.size() * sizeof(float3)));
-	// Initialize velocities to zero
-	CUDA_CHECK(cudaMemset(d_vertex_velocity, 0, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMalloc(&d_vertex_prev, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMemcpy(d_vertex_prev, vertices.data(), vertices.size() * sizeof(float3), cudaMemcpyHostToDevice));
 
-    // force initialization
+    CUDA_CHECK(cudaMalloc(&d_vertex_trial, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMemcpy(d_vertex_trial, vertices.data(), vertices.size() * sizeof(float3), cudaMemcpyHostToDevice));
+
+    CUDA_CHECK(cudaMalloc(&d_vertex_velocity, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMemset(d_vertex_velocity, 0, vertices.size() * sizeof(float3)));
+
     CUDA_CHECK(cudaMalloc(&d_force, vertices.size() * sizeof(float3)));
-    // Initialize forces to zero
-	CUDA_CHECK(cudaMemset(d_force, 0, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMemset(d_force, 0, vertices.size() * sizeof(float3)));
 
-    // mass initialization
+    CUDA_CHECK(cudaMalloc(&d_force_trial, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMemset(d_force_trial, 0, vertices.size() * sizeof(float3)));
+
     CUDA_CHECK(cudaMalloc(&d_mass, vertices.size() * sizeof(float)));
-    // Initialize masses to zero (this would typically be computed based on density and volume)
     CUDA_CHECK(cudaMemset(d_mass, 0, vertices.size() * sizeof(float)));
-    
+
+    CUDA_CHECK(cudaMalloc(&d_cg_rhs, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMalloc(&d_cg_solution, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMalloc(&d_cg_residual, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMalloc(&d_cg_direction, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMalloc(&d_cg_Ap, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMemset(d_cg_rhs, 0, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMemset(d_cg_solution, 0, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMemset(d_cg_residual, 0, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMemset(d_cg_direction, 0, vertices.size() * sizeof(float3)));
+    CUDA_CHECK(cudaMemset(d_cg_Ap, 0, vertices.size() * sizeof(float3)));
+
+    CUDA_CHECK(cudaMalloc(&d_cg_scalar, sizeof(float)));
+
     return true;
 }
 
 void ElasticitySolver::Initialize(const Mesh& mesh)
 {
-    // This function would convert the Mesh data into the format needed for the solver
-    // For simplicity, we assume the Mesh class has methods
     tetrahedralizeMesh(mesh, h_tet, h_vertex);
-	std::cout << "Tetrahedralization complete: " << h_tet.size() << " tetrahedra, " << h_vertex.size() << " vertices." << std::endl;
-	h_force.resize(h_vertex.size(), make_float3(0.0f, 0.0f, 0.0f)); // Initialize forces to zero
+    std::cout << "Tetrahedralization complete: " << h_tet.size() << " tetrahedra, " << h_vertex.size() << " vertices." << std::endl;
+    h_force.resize(h_vertex.size(), make_float3(0.0f, 0.0f, 0.0f));
+    h_mass.resize(h_vertex.size(), 0.0f);
 
     extractSurfaceTriangles(h_tet, h_vertex, suraceMesh);
     DataTransfer(h_tet, h_vertex);
     params_ready = false;
     info_printed = false;
+    implicit_fallback_warned = false;
 
     ComputeTetInitVolume();
 }
 
-
 void ElasticitySolver::ExportMesh(unsigned int frame)
 {
-    // Copy vertex data back to host and update the surface mesh vertices
     CUDA_CHECK(cudaMemcpy(this->suraceMesh.vertices.data(), d_vertex, h_vertex.size() * sizeof(float3), cudaMemcpyDeviceToHost));
-    // The faces of the surface mesh remain unchanged, so we can directly save it
     std::string filename = "D:/Code/ElasticSimulator/output/frame_" + std::to_string(frame) + ".obj";
     saveOBJ(filename, suraceMesh);
 }
@@ -77,19 +89,30 @@ void ElasticitySolver::PrintInfo() const
     std::cout << "Lambda: " << h_params.lambda << std::endl;
     std::cout << "Mu: " << h_params.mu << std::endl;
     std::cout << "Energy Type: " << (h_params.energyType == STVK ? "STVK" : (h_params.energyType == COROTATED ? "Corotated" : "NeoHookean")) << std::endl;
+    std::cout << "Solver Type: " << (h_params.solverType == EXPLICIT ? "Explicit" : "Implicit") << std::endl;
     std::cout << "Gravity: (" << h_params.gravity.x << ", " << h_params.gravity.y << ", " << h_params.gravity.z << ")" << std::endl;
     std::cout << "Boundary Min: (" << h_params.boundary_min.x << ", " << h_params.boundary_min.y << ", " << h_params.boundary_min.z << ")" << std::endl;
     std::cout << "Boundary Max: (" << h_params.boundary_max.x << ", " << h_params.boundary_max.y << ", " << h_params.boundary_max.z << ")" << std::endl;
+    std::cout << "Implicit CG Max Iterations: " << h_params.implicit_cg_max_iters << std::endl;
+    std::cout << "Implicit CG Tolerance: " << h_params.implicit_cg_tolerance << std::endl;
 }
 
 ElasticitySolver::~ElasticitySolver()
 {
-    // Free GPU memory
     cudaFree(d_tet);
     cudaFree(d_vertex);
+    cudaFree(d_vertex_prev);
+    cudaFree(d_vertex_trial);
     cudaFree(d_vertex_velocity);
     cudaFree(d_mass);
     cudaFree(d_force);
+    cudaFree(d_force_trial);
+    cudaFree(d_cg_rhs);
+    cudaFree(d_cg_solution);
+    cudaFree(d_cg_residual);
+    cudaFree(d_cg_direction);
+    cudaFree(d_cg_Ap);
+    cudaFree(d_cg_scalar);
 }
 
 const Mesh& ElasticitySolver::GetSurfaceMesh() const
@@ -107,8 +130,16 @@ size_t ElasticitySolver::GetVertexCount() const
     return h_vertex.size();
 }
 
+ElasticitySolver::Parameters& ElasticitySolver::GetParameters()
+{
+    params_ready = false;
+    return h_params;
+}
 
-// ©¤©¤©¤ Main simulation loop ©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤
+const ElasticitySolver::Parameters& ElasticitySolver::GetParameters() const
+{
+    return h_params;
+}
 
 void ElasticitySolver::Simulate(unsigned int total_frame, bool export_results)
 {

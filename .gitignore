@@ -16,4 +16,5 @@ build/
 .vscode/
 output/
 bin/
+__pycache__/
 imgui.ini

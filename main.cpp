@@ -28,6 +28,9 @@ int main()
     std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
     solver.Initialize(mesh);
     solver.SetInitialOffset(make_float3(0.0f, 0.3f, 0.0f));
+    auto& p = solver.GetParameters();
+    p.solverType = IMPLICIT;
+    p.energyType = NEOHOOKEAN;
 
     if (!viewer.Initialize(solver.GetSurfaceMesh(), 1280, 720)) {
         std::cerr << "Failed to initialize realtime viewer." << std::endl;

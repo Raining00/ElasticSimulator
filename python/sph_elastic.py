@@ -80,14 +80,14 @@ def parse_args():
                         "If omitted, a unit sphere particle cloud is generated.")
     p.add_argument("--sphere_radius", type=float, default=1.0,
                    help="Radius of the default unit sphere (default: 1.0)")
-    p.add_argument("--sphere_particles", type=int, default=2000,
+    p.add_argument("--sphere_particles", type=int, default=20000,
                    help="Target particle count for default sphere (default: 2000)")
 
     # Material
     p.add_argument("--model", type=str, default="corotated",
                    choices=["stvk", "corotated", "neohookean"],
                    help="Constitutive model (default: corotated)")
-    p.add_argument("--E",       type=float, default=1e5,
+    p.add_argument("--E",       type=float, default=1e3,
                    help="Young's modulus (default: 1e5)")
     p.add_argument("--nu",      type=float, default=0.3,
                    help="Poisson's ratio (default: 0.3)")

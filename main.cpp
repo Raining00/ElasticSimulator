@@ -31,6 +31,7 @@ int main()
     auto& p = solver.GetParameters();
     p.solverType = IMPLICIT;
     p.energyType = NEOHOOKEAN;
+	p.dt = 1e-3f;
 
     if (!viewer.Initialize(solver.GetSurfaceMesh(), 1280, 720)) {
         std::cerr << "Failed to initialize realtime viewer." << std::endl;

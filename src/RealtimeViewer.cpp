@@ -91,6 +91,7 @@ struct RealtimeViewer::Impl
     CameraMode mode = CameraMode::TPS;
 
     bool lmb_down = false;
+    bool mmb_down = false;
     bool first_mouse = true;
     double last_x = 0.0;
     double last_y = 0.0;
@@ -105,6 +106,7 @@ struct RealtimeViewer::Impl
     float fps_pitch = 0.0f;
 
     float mouse_sensitivity = 0.2f;
+    float tps_pan_sensitivity = 0.002f;
     float move_speed = 2.5f;
     bool key1_prev = false;
     bool key2_prev = false;
@@ -189,10 +191,26 @@ struct RealtimeViewer::Impl
             return;
         }
 
-        const float dx = static_cast<float>(xpos - last_x) * mouse_sensitivity;
-        const float dy = static_cast<float>(last_y - ypos) * mouse_sensitivity;
+        const float dx_raw = static_cast<float>(xpos - last_x);
+        const float dy_raw = static_cast<float>(ypos - last_y);
+        const float dx = dx_raw * mouse_sensitivity;
+        const float dy = -dy_raw * mouse_sensitivity;
         last_x = xpos;
         last_y = ypos;
+
+        if (!lmb_down && !mmb_down) {
+            return;
+        }
+
+        if (mode == CameraMode::TPS && mmb_down) {
+            const glm::vec3 camera_pos = GetTPSPosition();
+            const glm::vec3 view_dir = glm::normalize(tps_target - camera_pos);
+            const glm::vec3 right = glm::normalize(glm::cross(view_dir, glm::vec3(0.0f, 1.0f, 0.0f)));
+            const glm::vec3 up = glm::normalize(glm::cross(right, view_dir));
+            const float pan_scale = std::max(tps_distance, 0.2f) * tps_pan_sensitivity;
+            tps_target += (-dx_raw * pan_scale) * right + (dy_raw * pan_scale) * up;
+            return;
+        }
 
         if (!lmb_down) {
             return;
@@ -230,10 +248,15 @@ struct RealtimeViewer::Impl
     {
         (void)mods;
         auto* self = static_cast<Impl*>(glfwGetWindowUserPointer(window));
-        if (self == nullptr || button != GLFW_MOUSE_BUTTON_LEFT) {
+        if (self == nullptr) {
             return;
         }
-        self->lmb_down = (action == GLFW_PRESS);
+
+        if (button == GLFW_MOUSE_BUTTON_LEFT) {
+            self->lmb_down = (action == GLFW_PRESS);
+        } else if (button == GLFW_MOUSE_BUTTON_MIDDLE) {
+            self->mmb_down = (action == GLFW_PRESS);
+        }
     }
 
     static void ScrollCallback(GLFWwindow* window, double xoffset, double yoffset)

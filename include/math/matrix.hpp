@@ -1,25 +1,26 @@
+#pragma once
+
 #ifndef MATRIX_H
 #define MATRIX_H
-
-#include <cuda.h>
-#include <cuda_runtime.h>
 
 #ifndef GLM_FORCE_RADIANS
 #define GLM_FORCE_RADIANS
 #endif
 
+#include "math/Vector.hpp"
 #include "math/quaternion.hpp"
-
+template <typename Real>
 struct mat3 {
-	float data[9];
+	Real data[9];
+	using Vec3 = Vector<Real, 3>;
 
-	__host__ __device__ __forceinline__ mat3(float f = 1.f) {
+	__host__ __device__ __forceinline__ mat3(Real f = 1.f) {
 		data[0] = f; data[3] = 0; data[6] = 0;
 		data[1] = 0; data[4] = f; data[7] = 0;
 		data[2] = 0; data[5] = 0; data[8] = f;
 	}
 
-	__host__ __device__ __forceinline__ mat3(float a, float b, float c, float d, float e, float f, float g, float h, float i) {
+	__host__ __device__ __forceinline__ mat3(Real a, Real b, Real c, Real d, Real e, Real f, Real g, Real h, Real i) {
 		data[0] = a; data[3] = d; data[6] = g;
 		data[1] = b; data[4] = e; data[7] = h;
 		data[2] = c; data[5] = f; data[8] = i;
@@ -32,7 +33,7 @@ struct mat3 {
 	// 	data[2] = m[2]; data[5] = m[5]; data[8] = m[8];
 	// }
 
-	__host__ __device__ __forceinline__ mat3(const float3 &c0, const float3 &c1, const float3 &c2) {
+	__host__ __device__ __forceinline__ mat3(const Vec3 &c0, const Vec3 &c1, const Vec3 &c2) {
 		data[0] = c0.x; data[3] = c1.x; data[6] = c2.x;
 		data[1] = c0.y; data[4] = c1.y; data[7] = c2.y;
 		data[2] = c0.z; data[5] = c1.z; data[8] = c2.z;
@@ -59,22 +60,23 @@ struct mat3 {
 	// 					data[6], data[7], data[8]);
 	// }
 
-	__host__ __device__ __forceinline__ static mat3 outerProduct(const float3 &v, const float3& w) {
+	__host__ __device__ __forceinline__ static mat3 outerProduct(const Vec3 &v, const Vec3& w) {
 		return mat3(v.x*w.x, v.y*w.x, v.z*w.x,
 					v.x*w.y, v.y*w.y, v.z*w.y,
 					v.x*w.z, v.y*w.z, v.z*w.z);
 	}
 
-	__host__ __device__ __forceinline__ float& operator [] (int i) { return data[i]; }
-	__host__ __device__ __forceinline__ float  operator [] (int i) const { return data[i]; }
-	__host__ __device__ __forceinline__ float& operator () (int i, int j) { return data[i + 3 * j]; }
+	__host__ __device__ __forceinline__ Real& operator [] (int i) { return data[i]; }
+	__host__ __device__ __forceinline__ Real  operator [] (int i) const { return data[i]; }
+	__host__ __device__ __forceinline__ Real& operator () (int i, int j) { return data[i + 3 * j]; }
+	__host__ __device__ __forceinline__ Real operator () (int i, int j) const { return data[i + 3 * j]; }
 
-	__host__ __device__ __forceinline__	float3 row(int i) const { 
-		return make_float3(data[i], data[i + 3], data[i + 6]);
+	__host__ __device__ __forceinline__	Vec3 row(int i) const { 
+		return Vec3{ data[i], data[i + 3], data[i + 6] };
 	}
 
-	__host__ __device__ __forceinline__	float3 column(int i) const {
-		int j = 3 * i; return make_float3(data[j], data[j + 1], data[j + 2]); 
+	__host__ __device__ __forceinline__	Vec3 column(int i) const {
+		int j = 3 * i; return Vec3{ data[j], data[j + 1], data[j + 2] };
 	}
 
 	__host__ __device__ __forceinline__ mat3& operator *= (const mat3 &rhs) {
@@ -105,8 +107,8 @@ struct mat3 {
 		return result;
 	}
 
-	__host__ __device__ __forceinline__	float3 operator * (const float3 &rhs) const	{
-		float3 result;
+	__host__ __device__ __forceinline__	Vec3 operator * (const Vec3 &rhs) const	{
+		Vec3 result;
 		result.x = data[0] * rhs.x + data[3] * rhs.y + data[6] * rhs.z;
 		result.y = data[1] * rhs.x + data[4] * rhs.y + data[7] * rhs.z;
 		result.z = data[2] * rhs.x + data[5] * rhs.y + data[8] * rhs.z;
@@ -143,14 +145,14 @@ struct mat3 {
 		return tmp;
 	}
 
-	__host__ __device__ __forceinline__	mat3& operator *= (float f)	{
+	__host__ __device__ __forceinline__	mat3& operator *= (Real f)	{
 		data[0] *= f; data[3] *= f; data[6] *= f;
 		data[1] *= f; data[4] *= f; data[7] *= f;
 		data[2] *= f; data[5] *= f; data[8] *= f;
 		return *this;
 	}
 
-	__host__ __device__ __forceinline__	mat3 operator * (float f) const	{
+	__host__ __device__ __forceinline__	mat3 operator * (Real f) const	{
 		mat3 tmp = *this;
 		tmp[0] *= f; tmp[3] *= f; tmp[6] *= f;
 		tmp[1] *= f; tmp[4] *= f; tmp[7] *= f;
@@ -158,17 +160,17 @@ struct mat3 {
 		return tmp;
 	}
 
-	__host__ __device__ __forceinline__	mat3& operator /= (float f)	{
-		float fi = 1.f / f;
+	__host__ __device__ __forceinline__	mat3& operator /= (Real f)	{
+		Real fi = 1.f / f;
 		data[0] *= fi; data[3] *= fi; data[6] *= fi;
 		data[1] *= fi; data[4] *= fi; data[7] *= fi;
 		data[2] *= fi; data[5] *= fi; data[8] *= fi;
 		return *this;
 	}
 
-	__host__ __device__ __forceinline__	mat3 operator / (float f) const	{
+	__host__ __device__ __forceinline__	mat3 operator / (Real f) const	{
 		mat3 tmp = *this;
-		float fi = 1.f / f;
+		Real fi = 1.f / f;
 		tmp[0] *= fi; tmp[3] *= fi; tmp[6] *= fi;
 		tmp[1] *= fi; tmp[4] *= fi; tmp[7] *= fi;
 		tmp[2] *= fi; tmp[5] *= fi; tmp[8] *= fi;
@@ -181,7 +183,7 @@ struct mat3 {
 			m[2], m[5], m[8]);
 	}
 
-	__host__ __device__ __forceinline__	static float trace(const mat3 &m) {
+	__host__ __device__ __forceinline__	static Real trace(const mat3 &m) {
 		return m[0] + m[4] + m[8];
 	}
 
@@ -206,7 +208,7 @@ struct mat3 {
 		return tmp;
 	}
 
-	__host__ __device__ __forceinline__	static float innerProduct(const mat3 &A, const mat3 &B) {
+	__host__ __device__ __forceinline__	static Real innerProduct(const mat3 &A, const mat3 &B) {
 		return A[0] * B[0] + A[1] * B[1] + A[2] * B[2] + A[3] * B[3] + A[4] * B[4]
 			+ A[5] * B[5] + A[6] * B[6] + A[7] * B[7] + A[8] * B[8];
 	}
@@ -256,22 +258,22 @@ struct mat3 {
 		return tmp;
 	}
 
-	__host__ __device__ __forceinline__	static float determinant(const mat3 &M)	{
+	__host__ __device__ __forceinline__	static Real determinant(const mat3 &M)	{
 		return M[0] * (M[4] * M[8] - M[7] * M[5]) -
 			M[3] * (M[1] * M[8] - M[7] * M[2]) +
 			M[6] * (M[1] * M[5] - M[4] * M[2]);
 	}
 
-	__host__ __device__ __forceinline__	static mat3 fromQuat(const quat &q)	{
-		float qxx = q.x*q.x;
-		float qyy = q.y*q.y;
-		float qzz = q.z*q.z;
-		float qxz = q.x*q.z;
-		float qxy = q.x*q.y;
-		float qyz = q.y*q.z;
-		float qwx = q.w*q.x;
-		float qwy = q.w*q.y;
-		float qwz = q.w*q.z;
+	__host__ __device__ __forceinline__	static mat3 fromQuat(const quat<Real> &q)	{
+		Real qxx = q.x*q.x;
+		Real qyy = q.y*q.y;
+		Real qzz = q.z*q.z;
+		Real qxz = q.x*q.z;
+		Real qxy = q.x*q.y;
+		Real qyz = q.y*q.z;
+		Real qwx = q.w*q.x;
+		Real qwy = q.w*q.y;
+		Real qwz = q.w*q.z;
 		mat3 M;
 		M[0] = 1.f - 2.f*(qyy + qzz);
 		M[1] = 2.f * (qxy + qwz);
@@ -286,7 +288,7 @@ struct mat3 {
 	}
 
 	__host__ __device__ __forceinline__	static mat3 inverse(const mat3 &M) {
-		float invDet = 1.f / (M[0] * (M[4] * M[8] - M[7] * M[5]) -
+		Real invDet = 1.f / (M[0] * (M[4] * M[8] - M[7] * M[5]) -
 			M[3] * (M[1] * M[8] - M[7] * M[2]) +
 			M[6] * (M[1] * M[5] - M[4] * M[2]));
 		mat3 A;
@@ -321,11 +323,13 @@ struct mat3 {
 	}
 
 	// Should be written with a more robust solver, but this will do for now
-	__host__ __device__ __forceinline__	static float3 solve(const mat3 &A, const float3 &b)	{
-		return mat3::inverse(A) * b;
+	__host__ __device__ __forceinline__	static Vec3 solve(const mat3 &A, const Vec3 &b)	{
+		return mat3<Real>::inverse(A) * b;
 	}
 };
 
-__host__ __device__ __forceinline__ mat3 operator* (float f, const mat3 &m) { return m*f; }
+template<typename Real>
+__host__ __device__ __forceinline__ mat3<Real> operator* (Real f, const mat3<Real> &m) { return m*f; }
 
 #endif
+

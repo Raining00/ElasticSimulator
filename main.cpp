@@ -16,7 +16,7 @@ void scaleMesh(Mesh& mesh, float scale)
 int main()
 {
 	Mesh mesh;
-    ElasticitySolver solver;
+    ElasticitySolverf solver;
     RealtimeViewer viewer;
 
     if (!loadOBJ(PROJECT_SOURCE_DIR "/assets/sphere.obj", mesh)) {
@@ -27,7 +27,7 @@ int main()
 
     std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
     solver.Initialize(mesh);
-    solver.SetInitialOffset(make_float3(0.0f, 0.3f, 0.0f));
+    solver.SetInitialOffset({0.0f, 0.3f, 0.0f});
     auto& p = solver.GetParameters();
     p.energyType = NEOHOOKEAN;
 	p.dt = 1e-4f;
@@ -46,3 +46,5 @@ int main()
 
     return 0;
 }
+
+

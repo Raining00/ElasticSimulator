@@ -1,14 +1,12 @@
 #pragma once
 
-#include <cuda_runtime.h>
-
 #include "math/matrix.hpp"
 #include "math/helper_math.h"
 
-#include "svd3/svd3_cuda/svd3_cuda.h"
+#include "math/svd3_cuda.h"
 
-
-__host__ __device__ __forceinline__ void computeSVD(const mat3& A, mat3& W, mat3& S, mat3& V) {
+template<typename Real>
+__host__ __device__ __forceinline__ void computeSVD(const mat3<Real>& A, mat3<Real>& W, mat3<Real>& S, mat3<Real>& V) {
 
 	svd(A[0], A[3], A[6], A[1], A[4], A[7], A[2], A[5], A[8],
 		W[0], W[3], W[6], W[1], W[4], W[7], W[2], W[5], W[8],
@@ -23,12 +21,13 @@ __host__ __device__ __forceinline__ void computeSVD(const mat3& A, mat3& W, mat3
 * S is symmetric positive semidefinite
 * Can get Polar Decomposition from SVD, see first section of http://en.wikipedia.org/wiki/Polar_decomposition
 */
-__host__ __device__ void computePD(const mat3& A, mat3& R) {
+template<typename Real>
+__host__ __device__ void computePD(const mat3<Real>& A, mat3<Real>& R) {
 	// U is unitary matrix (i.e. orthogonal/orthonormal)
 	// P is positive semidefinite Hermitian matrix
-	mat3 W, S, V;
+	mat3<Real> W, S, V;
 	computeSVD(A, W, S, V);
-	R = mat3::multiplyABt(W, V);
+	R = mat3<Real>::multiplyABt(W, V);
 }
 
 
@@ -39,13 +38,14 @@ __host__ __device__ void computePD(const mat3& A, mat3& R) {
 * S is symmetric positive semidefinite
 * Can get Polar Decomposition from SVD, see first section of http://en.wikipedia.org/wiki/Polar_decomposition
 */
-__host__ __device__ void computePD(const mat3& A, mat3& R, mat3& P) {
+template <typename Real>
+__host__ __device__ void computePD(const mat3<Real>& A, mat3<Real>& R, mat3<Real>& P) {
 	// U is unitary matrix (i.e. orthogonal/orthonormal)
 	// P is positive semidefinite Hermitian matrix
-	mat3 W, S, V;
+	mat3<Real> W, S, V;
 	computeSVD(A, W, S, V);
-	R = mat3::multiplyABt(W, V);
-	P = mat3::multiplyADBt(V, S, V);
+	R = mat3<Real>::multiplyABt(W, V);
+	P = mat3<Real>::multiplyADBt(V, S, V);
 }
 
 /*
@@ -55,7 +55,8 @@ __host__ __device__ void computePD(const mat3& A, mat3& R, mat3& P) {
 * SVD : A = W * S * V'
 * PD : A = R * E
 */
-__host__ __device__ void computeSVDandPD(const mat3& A, mat3& W, mat3& S, mat3& V, mat3& R) {
+template <typename Real>
+__host__ __device__ void computeSVDandPD(const mat3<Real>& A, mat3<Real>& W, mat3<Real>& S, mat3<Real>& V, mat3<Real>& R) {
 	computeSVD(A, W, S, V);
-	R = mat3::multiplyABt(W, V);
+	R = mat3<Real>::multiplyABt(W, V);
 }

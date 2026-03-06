@@ -1,4 +1,5 @@
 #include "render/RealtimeViewer.h"
+#include "render/RealtimeViewerCuda.h"
 
 #define GLAD_GL_IMPLEMENTATION
 #include <glad/gl.h>
@@ -372,8 +373,8 @@ bool RealtimeViewer::Initialize(const Mesh& surface_mesh, int width, int height)
     glBindVertexArray(impl_->vao);
 
     glBindBuffer(GL_ARRAY_BUFFER, impl_->vbo);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(impl_->vertex_count * sizeof(float3)), nullptr, GL_DYNAMIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float3), reinterpret_cast<void*>(0));
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(impl_->vertex_count * sizeof(Vec3f)), nullptr, GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vec3f), reinterpret_cast<void*>(0));
     glEnableVertexAttribArray(0);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, impl_->ebo);
@@ -446,7 +447,7 @@ void RealtimeViewer::PollEvents()
     impl_->TickInput();
 }
 
-void RealtimeViewer::UpdateFromCuda(const float3* d_vertices, size_t vertex_count)
+void RealtimeViewer::UpdateFromCuda(const Vec3f* d_vertices, size_t vertex_count)
 {
     if (impl_->cuda_vbo == nullptr || d_vertices == nullptr || vertex_count != impl_->vertex_count) {
         return;
@@ -454,12 +455,32 @@ void RealtimeViewer::UpdateFromCuda(const float3* d_vertices, size_t vertex_coun
 
     try {
         CheckCuda(cudaGraphicsMapResources(1, &impl_->cuda_vbo, 0), "cudaGraphicsMapResources");
-        float3* vbo_ptr = nullptr;
+        Vec3f* vbo_ptr = nullptr;
         size_t num_bytes = 0;
         CheckCuda(cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(&vbo_ptr), &num_bytes, impl_->cuda_vbo),
             "cudaGraphicsResourceGetMappedPointer");
-        CheckCuda(cudaMemcpy(vbo_ptr, d_vertices, impl_->vertex_count * sizeof(float3), cudaMemcpyDeviceToDevice),
+        CheckCuda(cudaMemcpy(vbo_ptr, d_vertices, impl_->vertex_count * sizeof(Vec3f), cudaMemcpyDeviceToDevice),
             "cudaMemcpyDeviceToDevice");
+        CheckCuda(cudaGraphicsUnmapResources(1, &impl_->cuda_vbo, 0), "cudaGraphicsUnmapResources");
+    } catch (const std::exception&) {
+        glfwSetWindowShouldClose(impl_->window, GLFW_TRUE);
+    }
+}
+
+void RealtimeViewer::UpdateFromCuda(const Vec3d* d_vertices, size_t vertex_count)
+{
+    if (impl_->cuda_vbo == nullptr || d_vertices == nullptr || vertex_count != impl_->vertex_count) {
+        return;
+    }
+
+    try {
+        CheckCuda(cudaGraphicsMapResources(1, &impl_->cuda_vbo, 0), "cudaGraphicsMapResources");
+        Vec3f* vbo_ptr = nullptr;
+        size_t num_bytes = 0;
+        CheckCuda(cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(&vbo_ptr), &num_bytes, impl_->cuda_vbo),
+            "cudaGraphicsResourceGetMappedPointer");
+        CheckCuda(ConvertDeviceVerticesD2F(d_vertices, vbo_ptr, impl_->vertex_count),
+            "ConvertDeviceVerticesD2F");
         CheckCuda(cudaGraphicsUnmapResources(1, &impl_->cuda_vbo, 0), "cudaGraphicsUnmapResources");
     } catch (const std::exception&) {
         glfwSetWindowShouldClose(impl_->window, GLFW_TRUE);
@@ -494,3 +515,5 @@ RealtimeViewer::CameraMode RealtimeViewer::GetCameraMode() const
 {
     return impl_->mode;
 }
+
+

@@ -11,18 +11,17 @@
 #ifndef QUATERNION_H
 #define QUATERNION_H
 
-#include <cuda.h>
-#include <cuda_runtime.h>
-
+#include "math/Vector.hpp"
+template <typename Real>
 struct quat {
 	union {
-		float data[4];
-		struct { float x, y, z, w; };
+		Real data[4];
+		struct { Real x, y, z, w; };
 	};
 
 	__host__ __device__ __forceinline__	quat() { x = 0.f; y = 0.f; z = 0.f; w = 1.f; }
 
-	__host__ __device__ __forceinline__	quat(float ww, float xx, float yy, float zz) { x = xx; y = yy; z = zz; w = ww; }
+	__host__ __device__ __forceinline__	quat(Real ww, Real xx, Real yy, Real zz) { x = xx; y = yy; z = zz; w = ww; }
 
 	__host__ __device__ __forceinline__	quat(const quat &q) { x = q.x; y = q.y; z = q.z; w = q.w; }
 
@@ -31,15 +30,15 @@ struct quat {
 		return *this;
 	}
 
-	__host__ __device__ __forceinline__	float& operator [] (int i) { return data[i]; }
+	__host__ __device__ __forceinline__	Real& operator [] (int i) { return data[i]; }
 
-	__host__ __device__ __forceinline__	float operator [] (int i) const { return data[i]; }
+	__host__ __device__ __forceinline__	Real operator [] (int i) const { return data[i]; }
 
-	__host__ __device__ __forceinline__	quat& operator *= (float f) {
+	__host__ __device__ __forceinline__	quat& operator *= (Real f) {
 		x *= f; y *= f; z *= f; w *= f; return *this; 
 	}
 
-	__host__ __device__ __forceinline__	quat operator * (float f) const { 
+	__host__ __device__ __forceinline__	quat operator * (Real f) const { 
 		return quat(w*f, x*f, y*f, z*f); 
 	}
 

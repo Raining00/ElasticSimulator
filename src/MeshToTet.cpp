@@ -24,7 +24,7 @@ bool loadOBJ(const std::string& filename, Mesh& mesh) {
         return false;
     }
     for (size_t i = 0; i < attrib.vertices.size(); i += 3) {
-        mesh.vertices.push_back(make_float3(
+        mesh.vertices.push_back(make_vec3f(
             attrib.vertices[i + 0],
             attrib.vertices[i + 1],
             attrib.vertices[i + 2]
@@ -43,7 +43,7 @@ bool loadOBJ(const std::string& filename, Mesh& mesh) {
             tinyobj::index_t idx0 = shape.mesh.indices[index_offset + 0];
             tinyobj::index_t idx1 = shape.mesh.indices[index_offset + 1];
             tinyobj::index_t idx2 = shape.mesh.indices[index_offset + 2];
-            mesh.faces.push_back({ make_int3(idx0.vertex_index, idx1.vertex_index, idx2.vertex_index) });
+            mesh.faces.push_back({ make_vec3i(idx0.vertex_index, idx1.vertex_index, idx2.vertex_index) });
             index_offset += fv;
         }
     }
@@ -98,7 +98,7 @@ void buildTetgenInput(const Mesh& mesh, tetgenio& in) {
 
 void tetrahedralizeMesh(const Mesh& mesh, 
     std::vector<Tetrahedron>& tets, 
-    std::vector<float3>& vertices)
+    std::vector<Vec3f>& vertices)
 {
     tetgenio in, out;
 
@@ -110,7 +110,7 @@ void tetrahedralizeMesh(const Mesh& mesh,
     // vertices
     vertices.resize(out.numberofpoints);
     for(int i = 0; i < out.numberofpoints; ++i) {
-        vertices[i] = make_float3(
+        vertices[i] = make_vec3f(
             out.pointlist[i * 3 + 0],
             out.pointlist[i * 3 + 1],
             out.pointlist[i * 3 + 2]
@@ -120,7 +120,7 @@ void tetrahedralizeMesh(const Mesh& mesh,
     // tets
     tets.resize(out.numberoftetrahedra);
     for(int i = 0; i < out.numberoftetrahedra; ++i) {
-        tets[i].verticesIndex = make_int4(
+        tets[i].verticesIndex = make_vec4i(
             out.tetrahedronlist[i * 4 + 0],
             out.tetrahedronlist[i * 4 + 1],
             out.tetrahedronlist[i * 4 + 2],
@@ -131,7 +131,7 @@ void tetrahedralizeMesh(const Mesh& mesh,
 
 void extractSurfaceTriangles(
     const std::vector<Tetrahedron>& tets,
-    const std::vector<float3>& vertices,
+    const std::vector<Vec3f>& vertices,
     Mesh& surfaceMesh)
 {
     struct FaceKey {
@@ -194,28 +194,28 @@ void extractSurfaceTriangles(
 
         FaceInfo info = faceMap[key];
 
-        float3 xa = vertices[info.a];
-        float3 xb = vertices[info.b];
-        float3 xc = vertices[info.c];
-        float3 xd = vertices[info.opposite];
+        Vec3f xa = vertices[info.a];
+        Vec3f xb = vertices[info.b];
+        Vec3f xc = vertices[info.c];
+        Vec3f xd = vertices[info.opposite];
 
         // calculate normal
-        float3 ab{xb.x - xa.x, xb.y - xa.y, xb.z - xa.z};
-        float3 ac{xc.x - xa.x, xc.y - xa.y, xc.z - xa.z};
+        Vec3f ab{xb.x - xa.x, xb.y - xa.y, xb.z - xa.z};
+        Vec3f ac{xc.x - xa.x, xc.y - xa.y, xc.z - xa.z};
 
-        float3 normal = normalize(make_float3(
+        Vec3f normal = normalize(make_vec3f(
             ab.y * ac.z - ab.z * ac.y,
             ab.z * ac.x - ab.x * ac.z,
             ab.x * ac.y - ab.y * ac.x
         ));
 
-        float3 ad{xd.x - xa.x, xd.y - xa.y, xd.z - xa.z};
+        Vec3f ad{xd.x - xa.x, xd.y - xa.y, xd.z - xa.z};
         double dot = normal.x * ad.x + normal.y * ad.y + normal.z * ad.z;
 
         if (dot > 0) {
-            surfaceMesh.faces.push_back({ make_int3(info.a, info.b, info.c) });
+            surfaceMesh.faces.push_back({ make_vec3i(info.a, info.b, info.c) });
         } else {
-            surfaceMesh.faces.push_back({ make_int3(info.a, info.c, info.b) });
+            surfaceMesh.faces.push_back({ make_vec3i(info.a, info.c, info.b) });
         }
     }
 
@@ -225,3 +225,4 @@ void extractSurfaceTriangles(
    
 	// saveOBJ("D:/Code/ElasticSimulator/surface_mesh.obj", surfaceMesh);
 }
+

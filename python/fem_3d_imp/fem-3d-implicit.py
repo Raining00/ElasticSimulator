@@ -236,8 +236,8 @@ class Object:
                     self.dF[e, n, dim] = self.dD[e, n, dim] @ self.B[e] # !!! matrix multiplication
 
             F = self.F(e)
-            F_1 = F.inverse()
-            F_1_T = F_1.transpose()
+            F_inv = F.inverse()
+            F_invT = F_inv.transpose()
             J = max(F.determinant(), 0.01)
 
             for n in range(4):
@@ -255,9 +255,9 @@ class Object:
                             dF_T = dF.transpose()
 
                             # Tr( F^{-1} dF/dF_{ij} )
-                            dTr = F_1_T[i, j]
+                            dTr = F_invT[i, j]
 
-                            dP_dFij = self.mu * dF + (self.mu - self.la * ti.log(J)) * F_1_T @ dF_T @ F_1_T + self.la * dTr * F_1_T
+                            dP_dFij = self.mu * dF + (self.mu - self.la * ti.log(J)) * F_invT @ dF_T @ F_invT + self.la * dTr * F_invT
                             dFij_ndim = self.dF[e, n, dim][i, j]
 
                             self.dP[e, n, dim] += dP_dFij * dFij_ndim

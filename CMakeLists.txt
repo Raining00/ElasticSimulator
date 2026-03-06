@@ -60,6 +60,7 @@ target_include_directories(ElasticSimulator
 target_link_libraries(ElasticSimulator
     PRIVATE
         CUDA::cudart
+        CUDA::cublas
         tet
         glfw
         OpenGL::GL

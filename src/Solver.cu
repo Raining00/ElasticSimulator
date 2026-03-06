@@ -1,24 +1,25 @@
 /**
  * Solver.cu
- * Explicit and implicit FEM elasticity solver using CUDA.
+ * Explicit FEM elasticity solver using CUDA.
  *
- * Explicit path:
- *   1. Compute elastic forces
- *   2. Symplectic Euler integration
- *   3. Boundary projection
+ * Pipeline per substep:
+ *   1. ComputeForces  – compute elastic + gravity forces on every vertex
+ *   2. Integrate      – symplectic-Euler velocity/position update
+ *   3. BoundaryCheck  – enforce axis-aligned bounding-box collisions
  *
- * Implicit path (Neo-Hookean only for now):
- *   1. Predictor x* = x_n + dt v_n
- *   2. Linearize implicit Euler around x*
- *   3. Solve (M / dt^2 - dF/dx) dx = f(x*) with matrix-free CG
- *   4. Update x_{n+1} = x* + dx, v_{n+1} = (x_{n+1} - x_n) / dt
+ * Supported energy models (EnergyType):
+ *   STVK        – Saint-Venant Kirchhoff
+ *   COROTATED   – Corotated linear elasticity
+ *   NEOHOOKEAN  – Stable Neo-Hookean (Smith et al. 2018)
  */
 
 #include "Solver.h"
 #include "math/decomposition.hpp"
 #include "iostream"
-#include <algorithm>
-#include <cmath>
+
+ // ─────────────────────────────────────────────────────────────────────────────
+ // Helpers
+ // ─────────────────────────────────────────────────────────────────────────────
 
 #define CUDA_CHECK(call)                                                        \
     do {                                                                        \
@@ -30,9 +31,14 @@
         }                                                                       \
     } while (0)
 
+// Convenience: launch with 1-D grid covering n elements
 static dim3 grid1D(int n, int block = 256) {
     return dim3((n + block - 1) / block);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Device-side parameter struct (constant memory)
+// ─────────────────────────────────────────────────────────────────────────────
 
 struct DevParams {
     float lambda;
@@ -40,14 +46,18 @@ struct DevParams {
     float damping;
     float dt;
     float density;
-    float implicit_fd_epsilon;
     float3 gravity;
     float3 boundary_min;
     float3 boundary_max;
-    int energyType;
+    int   energyType;   // 0=STVK, 1=COROTATED, 2=NEOHOOKEAN
 };
 
 __constant__ DevParams c_params;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Deformation gradient  F = Ds * Dm_inv
+// Ds = [x1-x0 | x2-x0 | x3-x0]  (current edge matrix)
+// ─────────────────────────────────────────────────────────────────────────────
 
 __device__ __forceinline__ mat3 computeF(
     const Tetrahedron& tet,
@@ -63,78 +73,102 @@ __device__ __forceinline__ mat3 computeF(
     float3 x2 = vertex[i2];
     float3 x3 = vertex[i3];
 
+    // Ds: columns are edge vectors from vertex 0
     mat3 Ds(x1 - x0, x2 - x0, x3 - x0);
     return Ds * tet.Dm_inv;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// First Piola-Kirchhoff stress  P(F)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ---------- StVK ----------
+// E = 0.5*(F'F - I)
+// P = F*(2*mu*E + lambda*tr(E)*I)
 __device__ mat3 P_STVK(const mat3& F, float mu, float lambda)
 {
-    mat3 FtF = mat3::multiplyAtB(F, F);
-    mat3 E = (FtF - mat3(1.f)) * 0.5f;
+    mat3 FtF = mat3::multiplyAtB(F, F);            // F^T * F
+    mat3 E = (FtF - mat3(1.f)) * 0.5f;           // Green strain
     float trE = mat3::trace(E);
-    mat3 S = E * (2.f * mu) + mat3(lambda * trE);
+    mat3 S = E * (2.f * mu) + mat3(lambda * trE); // 2nd PK
     return F * S;
 }
 
+// ---------- Corotated ----------
+// F = R * S  (polar decomp)
+// P = 2*mu*(F - R) + lambda*(J-1)*J * F^{-T}
+// Simplified linear form: P = 2*mu*(F-R) + lambda*tr(S-I)*R
 __device__ mat3 P_Corotated(const mat3& F, float mu, float lambda)
 {
     mat3 R;
     computePD(F, R);
 
+    // tr(R^T F - I) = tr(S - I)  where S is symmetric part
     mat3 RtF = mat3::multiplyAtB(R, F);
     float tr = mat3::trace(RtF) - 3.f;
 
     return (F - R) * (2.f * mu) + R * (lambda * tr);
 }
 
+// ---------- Stable Neo-Hookean (Smith et al. 2018) ----------
+// Psi = mu/2*(I_C - 3) - mu*log(J) + lambda/2*(J-1)^2
+// P   = mu*(F - F^{-T}) + lambda*(J-1)*J*F^{-T}
 __device__ mat3 P_NeoHookean(const mat3& F, float mu, float lambda)
 {
     float J = mat3::determinant(F);
+    // Clamp J to avoid singularity
     J = fmaxf(J, 1e-4f);
 
     mat3 Finvt = mat3::transpose(mat3::inverse(F));
-    return (F - Finvt) * mu + Finvt * (lambda * (J - 1.f) * J);
+
+    // mu*(F - F^{-T}) + lambda*(J-1)*J * F^{-T}
+    mat3 P = (F - Finvt) * mu + Finvt * (lambda * (J - 1.f) * J);
+    return P;
 }
 
-__device__ __forceinline__ mat3 computeStress(const mat3& F)
-{
-    int etype = c_params.energyType;
-    float mu = c_params.mu;
-    float lambda = c_params.lambda;
+// ─────────────────────────────────────────────────────────────────────────────
+// Kernel 1 – compute elastic forces and mass from tetrahedra
+//            Uses atomic adds to scatter forces/masses to vertices
+// ─────────────────────────────────────────────────────────────────────────────
 
-    if (etype == 0) return P_STVK(F, mu, lambda);
-    if (etype == 1) return P_Corotated(F, mu, lambda);
-    return P_NeoHookean(F, mu, lambda);
-}
-
-__global__ void k_ZeroVec(float3* vec, int n)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
-    vec[tid] = make_float3(0.f, 0.f, 0.f);
-}
-
-__global__ void k_ComputeForces(
+__global__ void k_ComputeForcesAndMass(
     const Tetrahedron* __restrict__ tets,
     const float3* __restrict__ vertex,
     float3* force,
-    int numTets)
+    float* mass,
+    int                             numTets)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= numTets) return;
 
     const Tetrahedron& tet = tets[tid];
+
     int i0 = tet.verticesIndex.x;
     int i1 = tet.verticesIndex.y;
     int i2 = tet.verticesIndex.z;
     int i3 = tet.verticesIndex.w;
 
-    float V0 = tet.volume;
-    mat3 F = computeF(tet, vertex);
-    mat3 P = computeStress(F);
+    float V0 = tet.volume;          // rest volume
 
+    // ─── Deformation gradient ──────────────────────────────────────────────
+    mat3 F = computeF(tet, vertex);
+
+    // ─── First Piola-Kirchhoff stress ──────────────────────────────────────
+    mat3 P;
+    int etype = c_params.energyType;
+    float mu = c_params.mu;
+    float lambda = c_params.lambda;
+
+    if (etype == 0)      P = P_STVK(F, mu, lambda);
+    else if (etype == 1) P = P_Corotated(F, mu, lambda);
+    else                 P = P_NeoHookean(F, mu, lambda);
+
+    // ─── Nodal forces from the stress ─────────────────────────────────────
+    // f = -V0 * P * Dm^{-T}   (distributed to the four nodes)
+    // The force on node 1,2,3 = -V0 * P * col(Dm^{-T}, 0/1/2)
+    // Force on node 0 = -(f1+f2+f3)
     mat3 DmInvT = mat3::transpose(tet.Dm_inv);
-    mat3 H = P * DmInvT * (-V0);
+    mat3 H = P * DmInvT * (-V0);   // 3x3, columns = forces on nodes 1,2,3
 
     float3 f1 = H.column(0);
     float3 f2 = H.column(1);
@@ -143,6 +177,7 @@ __global__ void k_ComputeForces(
         -f1.y - f2.y - f3.y,
         -f1.z - f2.z - f3.z);
 
+    // Atomic scatter to vertex force array
     atomicAdd(&force[i0].x, f0.x);
     atomicAdd(&force[i0].y, f0.y);
     atomicAdd(&force[i0].z, f0.z);
@@ -158,46 +193,67 @@ __global__ void k_ComputeForces(
     atomicAdd(&force[i3].x, f3.x);
     atomicAdd(&force[i3].y, f3.y);
     atomicAdd(&force[i3].z, f3.z);
+
+    // ─── Mass distribution (1/4 of tet mass to each vertex) ───────────────
+    float tetMass = c_params.density * V0 * 0.25f;
+    atomicAdd(&mass[i0], tetMass);
+    atomicAdd(&mass[i1], tetMass);
+    atomicAdd(&mass[i2], tetMass);
+    atomicAdd(&mass[i3], tetMass);
 }
 
-__global__ void k_AddGravity(float3* force, const float* mass, int numVerts)
-{
-    int vid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (vid >= numVerts) return;
+// ─────────────────────────────────────────────────────────────────────────────
+// Kernel 2 – symplectic Euler integration + gravity + damping
+// ─────────────────────────────────────────────────────────────────────────────
 
-    float m = mass[vid];
-    float3 g = c_params.gravity;
-    force[vid].x += m * g.x;
-    force[vid].y += m * g.y;
-    force[vid].z += m * g.z;
-}
-
-__global__ void k_IntegrateExplicit(
+__global__ void k_Integrate(
     float3* __restrict__ vertex,
     float3* __restrict__ velocity,
-    const float3* __restrict__ force,
-    const float* __restrict__ mass,
+    float3* __restrict__ force,
+    float* __restrict__ mass,
     int numVerts)
 {
     int vid = blockIdx.x * blockDim.x + threadIdx.x;
     if (vid >= numVerts) return;
 
     float m = mass[vid];
-    if (m < 1e-12f) return;
+    if (m < 1e-12f) return;   // guard against zero-mass vertices
 
     float dt = c_params.dt;
     float damping = c_params.damping;
+    float3 g = c_params.gravity;
 
-    float3 a = force[vid] / m;
+    // Add gravity
+    float3 f = force[vid];
+    f.x += m * g.x;
+    f.y += m * g.y;
+    f.z += m * g.z;
+
+    // Acceleration
+    float3 a = make_float3(f.x / m, f.y / m, f.z / m);
+
+    // Symplectic Euler
     float3 v = velocity[vid];
-    v = v * (1.f - damping) + a * dt;
+    v.x = v.x * (1.f - damping) + a.x * dt;
+    v.y = v.y * (1.f - damping) + a.y * dt;
+    v.z = v.z * (1.f - damping) + a.z * dt;
 
     float3 x = vertex[vid];
-    x += v * dt;
+    x.x += v.x * dt;
+    x.y += v.y * dt;
+    x.z += v.z * dt;
 
     velocity[vid] = v;
     vertex[vid] = x;
+
+    // Reset force and mass for next substep
+    force[vid] = make_float3(0.f, 0.f, 0.f);
+    mass[vid] = 0.f;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Kernel 3 – AABB boundary collision (simple position projection + restitution)
+// ─────────────────────────────────────────────────────────────────────────────
 
 __global__ void k_BoundaryCheck(
     float3* __restrict__ vertex,
@@ -216,18 +272,25 @@ __global__ void k_BoundaryCheck(
     const float restitution = 0.3f;
     const float friction = 0.6f;
 
+    // X
     if (x.x < bmin.x) { x.x = bmin.x; if (v.x < 0) { v.x = -v.x * restitution; v.y *= friction; v.z *= friction; } }
     if (x.x > bmax.x) { x.x = bmax.x; if (v.x > 0) { v.x = -v.x * restitution; v.y *= friction; v.z *= friction; } }
 
+    // Y
     if (x.y < bmin.y) { x.y = bmin.y; if (v.y < 0) { v.y = -v.y * restitution; v.x *= friction; v.z *= friction; } }
     if (x.y > bmax.y) { x.y = bmax.y; if (v.y > 0) { v.y = -v.y * restitution; v.x *= friction; v.z *= friction; } }
 
+    // Z
     if (x.z < bmin.z) { x.z = bmin.z; if (v.z < 0) { v.z = -v.z * restitution; v.x *= friction; v.y *= friction; } }
     if (x.z > bmax.z) { x.z = bmax.z; if (v.z > 0) { v.z = -v.z * restitution; v.x *= friction; v.y *= friction; } }
 
     vertex[vid] = x;
     velocity[vid] = v;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Kernel 4 – initialise Dm_inv and rest volume for each tetrahedron
+// ─────────────────────────────────────────────────────────────────────────────
 
 __global__ void k_ComputeTetInitVolume(
     Tetrahedron* tets,
@@ -250,125 +313,98 @@ __global__ void k_ComputeTetInitVolume(
     float3 x3 = vertex[i3];
 
     mat3 Dm(x1 - x0, x2 - x0, x3 - x0);
+
+    // Volume = |det(Dm)| / 6
     float det = mat3::determinant(Dm);
     tet.volume = fabsf(det) / 6.f;
     tet.Dm_inv = mat3::inverse(Dm);
 }
 
-__global__ void k_CopyVec(float3* dst, const float3* src, int n)
+// ─────────────────────────────────────────────────────────────────────────────
+// Kernel 5 – Compute stiffness matrix for each tetrahedron
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ void K_ComputeK(
+    const Tetrahedron* __restrict__ tets,
+    const float3* __restrict__ vertex,
+    const float3* __restrict__ velocity,
+    const float3* __restrict__ force,
+    const float* __restrict__ mass,
+    const float* __restrict__ K, // global stiffness matrix in COO format (preallocated)
+    int numTets, int numVerts)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
-    dst[tid] = src[tid];
+    if (tid >= numTets) return;
+
+    const Tetrahedron& tet = tets[tid];
+    const int ids[4] = {
+        tet.verticesIndex.x,
+        tet.verticesIndex.y,
+        tet.verticesIndex.z,
+        tet.verticesIndex.w
+    };
+
+    const float k_edge = (c_params.lambda + 2.f * c_params.mu) * tet.volume * 0.25f;
+    const float k_diag = 3.f * k_edge;
+    float* __restrict__ K_out = const_cast<float*>(K);
+    const int ndof = numVerts * 3;
+
+    #pragma unroll
+    for (int a = 0; a < 4; ++a) {
+        const int ia3 = ids[a] * 3;
+        #pragma unroll
+        for (int b = 0; b < 4; ++b) {
+            const int ib3 = ids[b] * 3;
+            const float kab = (a == b) ? k_diag : -k_edge;
+
+            atomicAdd(&K_out[(ia3 + 0) * ndof + (ib3 + 0)], kab);
+            atomicAdd(&K_out[(ia3 + 1) * ndof + (ib3 + 1)], kab);
+            atomicAdd(&K_out[(ia3 + 2) * ndof + (ib3 + 2)], kab);
+        }
+    }
 }
 
-__global__ void k_SetPredictor(float3* vertex, float3* prev, const float3* velocity, int n)
+__global__ void k_integrateImplicit(
+    float3* __restrict__ vertex,
+    float3* __restrict__ velocity,
+    float3* __restrict__ delta_x,
+    int numVerts)
 {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
+    // Placeholder for implicit solver integration step
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= numVerts)
+        return;
+    
+    float3 dx = delta_x[idx];
+    vertex[idx] += dx;
+    velocity[idx] = dx / c_params.dt; // Update velocity based on position change
 
-    prev[tid] = vertex[tid];
-    vertex[tid] = vertex[tid] + velocity[tid] * c_params.dt;
+    return;
 }
 
-__global__ void k_BuildTrialPositions(float3* trial, const float3* base, const float3* dir, float alpha, int n)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
-    trial[tid] = base[tid] + dir[tid] * alpha;
-}
-
-__global__ void k_MassScaledCopy(float3* out, const float3* in, const float* mass, float scale, int n)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
-    out[tid] = in[tid] * (mass[tid] * scale);
-}
-
-__global__ void k_AddForceDifferenceToAp(float3* Ap, const float3* forceTrial, const float3* forceBase, float invEps, int n)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
-    Ap[tid] -= (forceTrial[tid] - forceBase[tid]) * invEps;
-}
-
-__global__ void k_CopyNegated(float3* dst, const float3* src, int n)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
-    dst[tid] = src[tid] * -1.f;
-}
-
-__global__ void k_InitCG(float3* solution, float3* residual, float3* direction, const float3* rhs, int n)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
-    solution[tid] = make_float3(0.f, 0.f, 0.f);
-    residual[tid] = rhs[tid];
-    direction[tid] = rhs[tid];
-}
-
-__global__ void k_CGStepSolutionResidual(float3* solution, float3* residual, const float3* direction, const float3* Ap, float alpha, int n)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
-    solution[tid] += direction[tid] * alpha;
-    residual[tid] -= Ap[tid] * alpha;
-}
-
-__global__ void k_CGStepDirection(float3* direction, const float3* residual, float beta, int n)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
-    direction[tid] = residual[tid] + direction[tid] * beta;
-}
-
-__global__ void k_Dot(const float3* a, const float3* b, float* out, int n)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
-    atomicAdd(out, dot(a[tid], b[tid]));
-}
-
-__global__ void k_FinalizeImplicitUpdate(float3* vertex, const float3* prev, float3* velocity, const float3* dx, int n)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
-
-    float3 x = vertex[tid] + dx[tid];
-    velocity[tid] = (x - prev[tid]) / c_params.dt;
-    vertex[tid] = x;
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// ElasticitySolver member implementations
+// ─────────────────────────────────────────────────────────────────────────────
 
 void ElasticitySolver::SetParams()
 {
+    // Compute Lamé parameters from Young's modulus and Poisson's ratio
     float E = h_params.youngs_modulus;
     float nu = h_params.poisson_ratio;
 
     h_params.mu = E / (2.f * (1.f + nu));
     h_params.lambda = E * nu / ((1.f + nu) * (1.f - 2.f * nu));
 
+    // Upload to constant memory
     DevParams dp;
     dp.lambda = h_params.lambda;
     dp.mu = h_params.mu;
     dp.damping = h_params.damping;
     dp.dt = h_params.dt;
     dp.density = h_params.density;
-    dp.implicit_fd_epsilon = fmaxf(h_params.implicit_fd_epsilon, 1e-6f);
     dp.gravity = h_params.gravity;
     dp.boundary_min = h_params.boundary_min;
     dp.boundary_max = h_params.boundary_max;
     dp.energyType = static_cast<int>(h_params.energyType);
-
-    std::fill(h_mass.begin(), h_mass.end(), 0.0f);
-    for (const auto& t : h_tet) {
-        float tetMass = h_params.density * t.volume * 0.25f;
-        h_mass[t.verticesIndex.x] += tetMass;
-        h_mass[t.verticesIndex.y] += tetMass;
-        h_mass[t.verticesIndex.z] += tetMass;
-        h_mass[t.verticesIndex.w] += tetMass;
-    }
-    CUDA_CHECK(cudaMemcpy(d_mass, h_mass.data(), h_mass.size() * sizeof(float), cudaMemcpyHostToDevice));
 
     CUDA_CHECK(cudaMemcpyToSymbol(c_params, &dp, sizeof(DevParams)));
 }
@@ -377,27 +413,18 @@ void ElasticitySolver::ComputeTetInitVolume()
 {
     int numTets = static_cast<int>(h_tet.size());
 
-    k_ComputeTetInitVolume<<<grid1D(numTets), 256>>>(d_tet, d_vertex, numTets);
+    k_ComputeTetInitVolume << <grid1D(numTets), 256 >> > (d_tet, d_vertex, numTets);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
+    // Copy back so host-side h_tet also has Dm_inv and volume
     CUDA_CHECK(cudaMemcpy(h_tet.data(), d_tet,
         numTets * sizeof(Tetrahedron),
         cudaMemcpyDeviceToHost));
 
-    std::fill(h_mass.begin(), h_mass.end(), 0.0f);
+    // Verify no degenerate tets
     float minVol = 1e30f;
-    for (const auto& t : h_tet) {
-        minVol = std::min(minVol, t.volume);
-        float tetMass = h_params.density * t.volume * 0.25f;
-        h_mass[t.verticesIndex.x] += tetMass;
-        h_mass[t.verticesIndex.y] += tetMass;
-        h_mass[t.verticesIndex.z] += tetMass;
-        h_mass[t.verticesIndex.w] += tetMass;
-    }
-
-    CUDA_CHECK(cudaMemcpy(d_mass, h_mass.data(), h_mass.size() * sizeof(float), cudaMemcpyHostToDevice));
-
+    for (auto& t : h_tet) minVol = std::min(minVol, t.volume);
     std::cout << "Min tet rest-volume: " << minVol << std::endl;
 }
 
@@ -408,153 +435,76 @@ void ElasticitySolver::SetInitialOffset(const float3& offset)
         v.y += offset.y;
         v.z += offset.z;
     }
-    CUDA_CHECK(cudaMemcpy(d_vertex, h_vertex.data(), h_vertex.size() * sizeof(float3), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_vertex_prev, h_vertex.data(), h_vertex.size() * sizeof(float3), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_vertex_trial, h_vertex.data(), h_vertex.size() * sizeof(float3), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_vertex,
+        h_vertex.data(),
+        h_vertex.size() * sizeof(float3),
+        cudaMemcpyHostToDevice));
 }
 
-bool ElasticitySolver::SolveImplicitCG()
-{
-    const int numVerts = static_cast<int>(h_vertex.size());
-    const int numTets = static_cast<int>(h_tet.size());
-    const float dt2_inv = 1.0f / (h_params.dt * h_params.dt);
-    const float eps = fmaxf(h_params.implicit_fd_epsilon, 1e-6f);
-
-    k_InitCG<<<grid1D(numVerts), 256>>>(d_cg_solution, d_cg_residual, d_cg_direction, d_cg_rhs, numVerts);
-    CUDA_CHECK(cudaGetLastError());
-
-    auto deviceDot = [&](const float3* a, const float3* b) -> float {
-        CUDA_CHECK(cudaMemset(d_cg_scalar, 0, sizeof(float)));
-        k_Dot<<<grid1D(numVerts), 256>>>(a, b, d_cg_scalar, numVerts);
-        CUDA_CHECK(cudaGetLastError());
-        float result = 0.0f;
-        CUDA_CHECK(cudaMemcpy(&result, d_cg_scalar, sizeof(float), cudaMemcpyDeviceToHost));
-        return result;
-    };
-
-    float rr = deviceDot(d_cg_residual, d_cg_residual);
-    const float rhsNorm0 = std::sqrt(std::max(rr, 0.0f));
-    if (rhsNorm0 < 1e-12f) {
-        return true;
-    }
-
-    for (unsigned int iter = 0; iter < h_params.implicit_cg_max_iters; ++iter) {
-        k_BuildTrialPositions<<<grid1D(numVerts), 256>>>(d_vertex_trial, d_vertex, d_cg_direction, eps, numVerts);
-        CUDA_CHECK(cudaGetLastError());
-
-        k_ZeroVec<<<grid1D(numVerts), 256>>>(d_force_trial, numVerts);
-        CUDA_CHECK(cudaGetLastError());
-        k_ComputeForces<<<grid1D(numTets), 256>>>(d_tet, d_vertex_trial, d_force_trial, numTets);
-        CUDA_CHECK(cudaGetLastError());
-        k_AddGravity<<<grid1D(numVerts), 256>>>(d_force_trial, d_mass, numVerts);
-        CUDA_CHECK(cudaGetLastError());
-
-        k_MassScaledCopy<<<grid1D(numVerts), 256>>>(d_cg_Ap, d_cg_direction, d_mass, dt2_inv, numVerts);
-        CUDA_CHECK(cudaGetLastError());
-        k_AddForceDifferenceToAp<<<grid1D(numVerts), 256>>>(d_cg_Ap, d_force_trial, d_force, 1.0f / eps, numVerts);
-        CUDA_CHECK(cudaGetLastError());
-
-        float pAp = deviceDot(d_cg_direction, d_cg_Ap);
-        if (!std::isfinite(pAp) || fabsf(pAp) < 1e-20f) {
-            return false;
-        }
-
-        float alpha = rr / pAp;
-        if (!std::isfinite(alpha)) {
-            return false;
-        }
-
-        k_CGStepSolutionResidual<<<grid1D(numVerts), 256>>>(d_cg_solution, d_cg_residual, d_cg_direction, d_cg_Ap, alpha, numVerts);
-        CUDA_CHECK(cudaGetLastError());
-
-        float rrNew = deviceDot(d_cg_residual, d_cg_residual);
-        if (!std::isfinite(rrNew)) {
-            return false;
-        }
-
-        if (std::sqrt(std::max(rrNew, 0.0f)) <= h_params.implicit_cg_tolerance * std::max(rhsNorm0, 1e-6f)) {
-            return true;
-        }
-
-        float beta = rrNew / rr;
-        rr = rrNew;
-        k_CGStepDirection<<<grid1D(numVerts), 256>>>(d_cg_direction, d_cg_residual, beta, numVerts);
-        CUDA_CHECK(cudaGetLastError());
-    }
-
-    return true;
-}
-
-void ElasticitySolver::StepExplicit()
+void ElasticitySolver::Step_Explicit()
 {
     int numTets = static_cast<int>(h_tet.size());
     int numVerts = static_cast<int>(h_vertex.size());
 
-    k_ZeroVec<<<grid1D(numVerts), 256>>>(d_force, numVerts);
+    // Forces need to start at zero before accumulation
+    // (reset is done at the end of k_Integrate; first substep is zeroed in DataTransfer)
+
+    // 1. Accumulate elastic forces and lumped mass
+    k_ComputeForcesAndMass << <grid1D(numTets), 256 >> > (
+        d_tet, d_vertex, d_force, d_mass, numTets);
     CUDA_CHECK(cudaGetLastError());
 
-    k_ComputeForces<<<grid1D(numTets), 256>>>(d_tet, d_vertex, d_force, numTets);
+    // 2. Integrate (symplectic Euler) + reset buffers
+    k_Integrate << <grid1D(numVerts), 256 >> > (
+        d_vertex, d_vertex_velocity, d_force, d_mass, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
-    k_AddGravity<<<grid1D(numVerts), 256>>>(d_force, d_mass, numVerts);
+    // 3. Boundary enforcement
+    k_BoundaryCheck << <grid1D(numVerts), 256 >> > (
+        d_vertex, d_vertex_velocity, numVerts);
     CUDA_CHECK(cudaGetLastError());
-
-    CUDA_CHECK(cudaMemcpy(h_force.data(), d_force, sizeof(float3) * h_force.size(), cudaMemcpyDeviceToHost));
-
-    k_IntegrateExplicit<<<grid1D(numVerts), 256>>>(d_vertex, d_vertex_velocity, d_force, d_mass, numVerts);
-    CUDA_CHECK(cudaGetLastError());
-
-    k_BoundaryCheck<<<grid1D(numVerts), 256>>>(d_vertex, d_vertex_velocity, numVerts);
-    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
-void ElasticitySolver::StepImplicit()
+void ElasticitySolver::Step_Implicit()
 {
+    // Placeholder for implicit solver implementation
+    if(h_params.energyType != NEOHOOKEAN) {
+        std::cerr << "Implicit solver currently only supports Neo-Hookean energy.\n";
+        exit(EXIT_FAILURE);
+    }
     int numTets = static_cast<int>(h_tet.size());
     int numVerts = static_cast<int>(h_vertex.size());
 
-    k_SetPredictor<<<grid1D(numVerts), 256>>>(d_vertex, d_vertex_prev, d_vertex_velocity, numVerts);
+    // 1. Compute forces
+    k_ComputeForcesAndMass << <grid1D(numTets), 256 >> > (
+        d_tet, d_vertex, d_force, d_mass, numTets);
     CUDA_CHECK(cudaGetLastError());
 
-    k_ZeroVec<<<grid1D(numVerts), 256>>>(d_force, numVerts);
-    CUDA_CHECK(cudaGetLastError());
-    k_ComputeForces<<<grid1D(numTets), 256>>>(d_tet, d_vertex, d_force, numTets);
-    CUDA_CHECK(cudaGetLastError());
-    k_AddGravity<<<grid1D(numVerts), 256>>>(d_force, d_mass, numVerts);
+    // 2. Assmble linear systm. (Each thread computes contribution from one tet to the global stiffness matrix and force vector)
+
+    // 3. Solve linear system. matrix-free CG or PCG with implicit mat-vec product kernel.
+
+    // 4. Integrate positions/velocities
+    k_integrateImplicit << <grid1D(numVerts), 256 >> > (
+        d_vertex, d_vertex_velocity, d_vertex, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
-    k_CopyVec<<<grid1D(numVerts), 256>>>(d_cg_rhs, d_force, numVerts);
+    // 5. Boundary enforcement
+    k_BoundaryCheck << <grid1D(numVerts), 256 >> > (
+        d_vertex, d_vertex_velocity, numVerts);
     CUDA_CHECK(cudaGetLastError());
-
-    bool cgOk = SolveImplicitCG();
-    if (!cgOk) {
-        k_CopyVec<<<grid1D(numVerts), 256>>>(d_vertex, d_vertex_prev, numVerts);
-        CUDA_CHECK(cudaGetLastError());
-        StepExplicit();
-        return;
-    }
-
-    k_FinalizeImplicitUpdate<<<grid1D(numVerts), 256>>>(d_vertex, d_vertex_prev, d_vertex_velocity, d_cg_solution, numVerts);
-    CUDA_CHECK(cudaGetLastError());
-
-    k_BoundaryCheck<<<grid1D(numVerts), 256>>>(d_vertex, d_vertex_velocity, numVerts);
-    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
+
+// ─── Single substep ────────────────────────────────────────────────────────
 
 void ElasticitySolver::Step()
 {
-    if (h_params.solverType == IMPLICIT) {
-        if (h_params.energyType != NEOHOOKEAN) {
-            if (!implicit_fallback_warned) {
-                std::cerr << "Implicit FEM is only implemented for Neo-Hookean right now. Falling back to explicit integration." << std::endl;
-                implicit_fallback_warned = true;
-            }
-            StepExplicit();
-            return;
-        }
-        StepImplicit();
-        return;
+    if (h_params.solverType == EXPLICIT) Step_Explicit();
+    else if (h_params.solverType == IMPLICIT) Step_Implicit();
+    else {
+        std::cerr << "Unknown solver type!\n";
+        exit(EXIT_FAILURE);
     }
-
-    StepExplicit();
 }

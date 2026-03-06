@@ -7,6 +7,7 @@
 struct GLFWwindow;
 struct cudaGraphicsResource;
 
+template<typename Real>
 class RealtimeViewer
 {
 public:
@@ -19,7 +20,7 @@ public:
     RealtimeViewer();
     ~RealtimeViewer();
 
-    bool Initialize(const Mesh& surface_mesh, int width = 1280, int height = 720);
+    bool Initialize(const Mesh<Real>& surface_mesh, int width = 1280, int height = 720);
     void Shutdown();
 
     bool ShouldClose() const;

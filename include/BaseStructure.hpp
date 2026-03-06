@@ -9,21 +9,21 @@ struct Triangle {
 };
 
 template <typename Real>
-struct MeshT {
+struct Mesh {
     using Vec3 = Vector<Real, 3>;
     std::vector<Vec3> vertices; // array of vertex positions
     std::vector<Triangle> faces; // array of triangles
 };
 
 template <typename Real>
-struct TetrahedronT {
+struct Tetrahedron {
     Vec4i verticesIndex; // index of the four vertices
     mat3<Real> Dm_inv; // inverse of the rest state matrix
     Real volume; // rest volume
 };
 
 template <typename Real>
-struct ParticleT {
+struct Particle {
     using Vec3 = Vector<Real, 3>;
     Vec3 position;
     Vec3 position_rest;
@@ -31,7 +31,3 @@ struct ParticleT {
     Vec3 force;
     Real mass;
 };
-
-using Mesh = MeshT<float>;
-using Tetrahedron = TetrahedronT<float>;
-using Particle = ParticleT<float>;

@@ -4,26 +4,16 @@
 #include "render/RealtimeViewer.h"
 #include "ProjectPaths.h"
 
-void scaleMesh(Mesh& mesh, float scale)
-{
-    for (auto& vertex : mesh.vertices) {
-        vertex.x *= scale;
-        vertex.y *= scale;
-        vertex.z *= scale;
-    }
-}
-
 int main()
 {
-	Mesh mesh;
-    ElasticitySolverf solver;
-    RealtimeViewer viewer;
+	Mesh<double> mesh;
+    ElasticitySolverT<double> solver;
+    RealtimeViewer<double> viewer;
 
     if (!loadOBJ(PROJECT_SOURCE_DIR "/assets/sphere.obj", mesh)) {
         std::cerr << "Failed to load mesh." << std::endl;
         return 1;
 	}
-	scaleMesh(mesh, 3.0f);
 
     std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
     solver.Initialize(mesh);

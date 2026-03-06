@@ -12,7 +12,8 @@
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"
 
-bool loadOBJ(const std::string& filename, Mesh& mesh) {
+template <typename Real>
+bool loadOBJ(const std::string& filename, Mesh<Real>& mesh) {
     std::ifstream in(filename);
     if (!in.is_open()) return false;
     tinyobj::attrib_t attrib;
@@ -24,11 +25,11 @@ bool loadOBJ(const std::string& filename, Mesh& mesh) {
         return false;
     }
     for (size_t i = 0; i < attrib.vertices.size(); i += 3) {
-        mesh.vertices.push_back(make_vec3f(
-            attrib.vertices[i + 0],
-            attrib.vertices[i + 1],
-            attrib.vertices[i + 2]
-        ));
+        mesh.vertices.push_back(typename Mesh<Real>::Vec3{
+            static_cast<Real>(attrib.vertices[i + 0]),
+            static_cast<Real>(attrib.vertices[i + 1]),
+            static_cast<Real>(attrib.vertices[i + 2])
+        });
     }
     // faces
     for (const auto& shape : shapes) {
@@ -50,7 +51,8 @@ bool loadOBJ(const std::string& filename, Mesh& mesh) {
     return true;
 }
 
-void saveOBJ(const std::string& filename, const Mesh& mesh) {
+template <typename Real>
+void saveOBJ(const std::string& filename, const Mesh<Real>& mesh) {
     std::ofstream out(filename);
     if (!out.is_open()) return;
 
@@ -65,7 +67,8 @@ void saveOBJ(const std::string& filename, const Mesh& mesh) {
     }
 }
 
-void buildTetgenInput(const Mesh& mesh, tetgenio& in) {
+template <typename Real>
+void buildTetgenInput(const Mesh<Real>& mesh, tetgenio& in) {
     in.firstnumber = 0; // 0-based indexing 
 
     // vertices
@@ -96,8 +99,9 @@ void buildTetgenInput(const Mesh& mesh, tetgenio& in) {
     }
 }
 
-void tetrahedralizeMesh(const Mesh& mesh, 
-    std::vector<Tetrahedron>& tets, 
+template <typename Real>
+void tetrahedralizeMesh(const Mesh<Real>& mesh, 
+    std::vector<Tetrahedron<Real>>& tets, 
     std::vector<Vec3f>& vertices)
 {
     tetgenio in, out;
@@ -129,10 +133,11 @@ void tetrahedralizeMesh(const Mesh& mesh,
     }
 }
 
+template <typename Real>
 void extractSurfaceTriangles(
-    const std::vector<Tetrahedron>& tets,
+    const std::vector<Tetrahedron<Real>>& tets,
     const std::vector<Vec3f>& vertices,
-    Mesh& surfaceMesh)
+    Mesh<Real>& surfaceMesh)
 {
     struct FaceKey {
         int v[3];
@@ -219,10 +224,42 @@ void extractSurfaceTriangles(
         }
     }
 
-    surfaceMesh.vertices = vertices;
+    surfaceMesh.vertices.resize(vertices.size());
+    for (size_t i = 0; i < vertices.size(); ++i) {
+        surfaceMesh.vertices[i] = typename Mesh<Real>::Vec3{
+            static_cast<Real>(vertices[i].x),
+            static_cast<Real>(vertices[i].y),
+            static_cast<Real>(vertices[i].z)
+        };
+    }
     
-    printf("Extrace surface %d triangles\n", surfaceMesh.faces.size());
-   
-	// saveOBJ("D:/Code/ElasticSimulator/surface_mesh.obj", surfaceMesh);
+    printf("Extrace surface %zu triangles\n", surfaceMesh.faces.size());   
 }
+
+template bool loadOBJ<float>(const std::string& filename, Mesh<float>& mesh);
+template bool loadOBJ<double>(const std::string& filename, Mesh<double>& mesh);
+
+template void saveOBJ<float>(const std::string& filename, const Mesh<float>& mesh);
+template void saveOBJ<double>(const std::string& filename, const Mesh<double>& mesh);
+
+template void buildTetgenInput<float>(const Mesh<float>& mesh, tetgenio& in);
+template void buildTetgenInput<double>(const Mesh<double>& mesh, tetgenio& in);
+
+template void tetrahedralizeMesh<float>(
+    const Mesh<float>& mesh,
+    std::vector<Tetrahedron<float>>& tets,
+    std::vector<Vec3f>& vertices);
+template void tetrahedralizeMesh<double>(
+    const Mesh<double>& mesh,
+    std::vector<Tetrahedron<double>>& tets,
+    std::vector<Vec3f>& vertices);
+
+template void extractSurfaceTriangles<float>(
+    const std::vector<Tetrahedron<float>>& tets,
+    const std::vector<Vec3f>& vertices,
+    Mesh<float>& surfaceMesh);
+template void extractSurfaceTriangles<double>(
+    const std::vector<Tetrahedron<double>>& tets,
+    const std::vector<Vec3f>& vertices,
+    Mesh<double>& surfaceMesh);
 

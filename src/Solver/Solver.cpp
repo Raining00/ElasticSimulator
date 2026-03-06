@@ -15,11 +15,11 @@
     } while (0)
 
 template <typename Real>
-bool ElasticitySolverT<Real>::DataTransfer(const std::vector<Tetrahedron>& tets, const std::vector<Vec3>& vertices)
+bool ElasticitySolverT<Real>::DataTransfer(const std::vector<Tetrahedron<Real>>& tets, const std::vector<Vec3>& vertices)
 {
     // Allocate and copy data to GPU
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_tet), tets.size() * sizeof(Tetrahedron)));
-    CUDA_CHECK(cudaMemcpy(d_tet, tets.data(), tets.size() * sizeof(Tetrahedron), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_tet), tets.size() * sizeof(Tetrahedron<Real>)));
+    CUDA_CHECK(cudaMemcpy(d_tet, tets.data(), tets.size() * sizeof(Tetrahedron<Real>), cudaMemcpyHostToDevice));
 
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_vertex), vertices.size() * sizeof(Vec3)));
     CUDA_CHECK(cudaMemcpy(d_vertex, vertices.data(), vertices.size() * sizeof(Vec3), cudaMemcpyHostToDevice));
@@ -43,7 +43,7 @@ bool ElasticitySolverT<Real>::DataTransfer(const std::vector<Tetrahedron>& tets,
 }
 
 template <typename Real>
-void ElasticitySolverT<Real>::Initialize(const Mesh& mesh)
+void ElasticitySolverT<Real>::Initialize(const Mesh<Real>& mesh)
 {
     std::vector<Vec3f> tet_vertices_f;
     // This function would convert the Mesh data into the format needed for the solver
@@ -76,7 +76,7 @@ void ElasticitySolverT<Real>::ExportMesh(unsigned int frame)
     CUDA_CHECK(cudaMemcpy(host_vertices.data(), d_vertex, h_vertex.size() * sizeof(Vec3), cudaMemcpyDeviceToHost));
     this->suraceMesh.vertices.resize(host_vertices.size());
     for (size_t i = 0; i < host_vertices.size(); ++i) {
-        suraceMesh.vertices[i] = Vec3f{
+        suraceMesh.vertices[i] = Vec3 {
             static_cast<float>(host_vertices[i].x),
             static_cast<float>(host_vertices[i].y),
             static_cast<float>(host_vertices[i].z)
@@ -117,7 +117,7 @@ ElasticitySolverT<Real>::~ElasticitySolverT()
 }
 
 template <typename Real>
-const Mesh& ElasticitySolverT<Real>::GetSurfaceMesh() const
+const Mesh<Real>& ElasticitySolverT<Real>::GetSurfaceMesh() const
 {
     return suraceMesh;
 }
@@ -191,11 +191,11 @@ void ElasticitySolverT<Real>::SimulateFrame(bool export_result)
     }
 }
 
-template bool ElasticitySolverT<float>::DataTransfer(const std::vector<Tetrahedron>&, const std::vector<Vec3f>&);
-template bool ElasticitySolverT<double>::DataTransfer(const std::vector<Tetrahedron>&, const std::vector<Vec3d>&);
+template bool ElasticitySolverT<float>::DataTransfer(const std::vector<Tetrahedron<float>>&, const std::vector<Vec3f>&);
+template bool ElasticitySolverT<double>::DataTransfer(const std::vector<Tetrahedron<double>>&, const std::vector<Vec3d>&);
 
-template void ElasticitySolverT<float>::Initialize(const Mesh&);
-template void ElasticitySolverT<double>::Initialize(const Mesh&);
+template void ElasticitySolverT<float>::Initialize(const Mesh<float>&);
+template void ElasticitySolverT<double>::Initialize(const Mesh <double> &);
 
 template void ElasticitySolverT<float>::Simulate(unsigned int, bool);
 template void ElasticitySolverT<double>::Simulate(unsigned int, bool);
@@ -206,8 +206,8 @@ template void ElasticitySolverT<double>::SimulateFrame(bool);
 template void ElasticitySolverT<float>::ExportMesh(unsigned int);
 template void ElasticitySolverT<double>::ExportMesh(unsigned int);
 
-template const Mesh& ElasticitySolverT<float>::GetSurfaceMesh() const;
-template const Mesh& ElasticitySolverT<double>::GetSurfaceMesh() const;
+template const Mesh<float>& ElasticitySolverT<float>::GetSurfaceMesh() const;
+template const Mesh<double>& ElasticitySolverT<double>::GetSurfaceMesh() const;
 
 template const ElasticitySolverT<float>::Vec3* ElasticitySolverT<float>::GetDeviceVertices() const;
 template const ElasticitySolverT<double>::Vec3* ElasticitySolverT<double>::GetDeviceVertices() const;

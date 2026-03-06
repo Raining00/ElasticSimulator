@@ -44,21 +44,21 @@ public:
     ElasticitySolverT() = default;
     ~ElasticitySolverT();
 
-    void Initialize(const Mesh& mesh);
+    void Initialize(const Mesh<Real>& mesh);
 
     void Simulate(unsigned int total_frame = 30, bool export_results = true);
     void SimulateFrame(bool export_result = false);
 
     void SetInitialOffset(const Vec3& offset);
     void ExportMesh(unsigned int frame);
-    const Mesh& GetSurfaceMesh() const;
+    const Mesh<Real>& GetSurfaceMesh() const;
     const Vec3* GetDeviceVertices() const;
     size_t GetVertexCount() const;
 	Parameters& GetParameters() { return h_params; }
     const Parameters& GetParameters() const { return h_params; }
 
 protected:
-    bool DataTransfer(const std::vector<Tetrahedron>& tets, const std::vector<Vec3>& vertices);
+    bool DataTransfer(const std::vector<Tetrahedron<Real>>& tets, const std::vector<Vec3>& vertices);
 
     void ComputeTetInitVolume();
     void SetParams();
@@ -70,13 +70,13 @@ protected:
 
 private:
     // host data
-    std::vector<Tetrahedron> h_tet;
+    std::vector<Tetrahedron<Real>> h_tet;
     std::vector<Vec3> h_vertex;
 	Parameters h_params;
-    Mesh suraceMesh;
+    Mesh<Real> suraceMesh;
 
     //device data
-    Tetrahedron* d_tet;
+    Tetrahedron<Real>* d_tet;
     Vec3* d_vertex;
 	Vec3* d_vertex_velocity;
     Vec3* d_force;

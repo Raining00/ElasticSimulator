@@ -73,7 +73,7 @@ __device__ __forceinline__ const DevParams<double>& GetDevParams<double>() { ret
 
 template <typename Real>
 __device__ __forceinline__ mat3<Real> computeF(
-    const Tetrahedron& tet,
+    const Tetrahedron<Real>& tet,
     const Vector<Real, 3>* vertex)
 {
     using Vec3 = Vector<Real, 3>;
@@ -159,7 +159,7 @@ __device__ mat3<Real> P_NeoHookean(const mat3<Real>& F, Real mu, Real lambda)
 
 template <typename Real>
 __global__ void k_ComputeForcesAndMass(
-    const Tetrahedron* __restrict__ tets,
+    const Tetrahedron<Real>* __restrict__ tets,
     const Vector<Real, 3>* __restrict__ vertex,
     Vector<Real, 3>* force,
     Real* mass,
@@ -171,7 +171,7 @@ __global__ void k_ComputeForcesAndMass(
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= numTets) return;
 
-    const Tetrahedron& tet = tets[tid];
+    const Tetrahedron<Real>& tet = tets[tid];
 
     int i0 = tet.verticesIndex.x;
     int i1 = tet.verticesIndex.y;
@@ -333,7 +333,7 @@ __global__ void k_BoundaryCheck(
 
 template <typename Real>
 __global__ void k_ComputeTetInitVolume(
-    Tetrahedron* tets,
+    Tetrahedron<Real>* tets,
     const Vector<Real, 3>* __restrict__ vertex,
     int numTets)
 {
@@ -342,7 +342,7 @@ __global__ void k_ComputeTetInitVolume(
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= numTets) return;
 
-    Tetrahedron& tet = tets[tid];
+    Tetrahedron<Real>& tet = tets[tid];
 
     int i0 = tet.verticesIndex.x;
     int i1 = tet.verticesIndex.y;
@@ -370,7 +370,7 @@ __global__ void k_ComputeTetInitVolume(
 // ─────────────────────────────────────────────────────────────────────────────
 template <typename Real>
 __global__ void K_ComputeK(
-    const Tetrahedron* __restrict__ tets,
+    const Tetrahedron<Real>* __restrict__ tets,
     const Vector<Real, 3>* __restrict__ vertex,
     const Vector<Real, 3>* __restrict__ velocity,
     const Vector<Real, 3>* __restrict__ force,
@@ -381,7 +381,7 @@ __global__ void K_ComputeK(
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= numTets) return;
 
-    const Tetrahedron& tet = tets[tid];
+    const Tetrahedron<Real>& tet = tets[tid];
     const int ids[4] = {
         tet.verticesIndex.x,
         tet.verticesIndex.y,
@@ -472,10 +472,10 @@ void ElasticitySolverT<Real>::ComputeTetInitVolume()
     CUDA_CHECK(cudaDeviceSynchronize());
 
     CUDA_CHECK(cudaMemcpy(h_tet.data(), d_tet,
-        numTets * sizeof(Tetrahedron),
+        numTets * sizeof(Tetrahedron<Real>),
         cudaMemcpyDeviceToHost));
 
-    float minVol = 1e30f;
+    Real minVol = 1e30f;
     for (auto& t : h_tet) minVol = std::min(minVol, t.volume);
     std::cout << "Min tet rest-volume: " << minVol << std::endl;
 }

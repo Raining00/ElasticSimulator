@@ -4,18 +4,24 @@
 
 class tetgenio;
 
-bool loadOBJ(const std::string& filename, Mesh& mesh);
-void saveOBJ(const std::string& filename, const Mesh& mesh);
+template <typename Real>
+bool loadOBJ(const std::string& filename, Mesh<Real>& mesh);
 
-void buildTetgenInput(const Mesh& mesh, tetgenio& in);
+template <typename Real>
+void saveOBJ(const std::string& filename, const Mesh<Real>& mesh);
 
-void tetrahedralizeMesh(const Mesh& mesh, 
-    std::vector<Tetrahedron>& tets, 
+template <typename Real>
+void buildTetgenInput(const Mesh<Real>& mesh, tetgenio& in);
+
+template <typename Real>
+void tetrahedralizeMesh(const Mesh<Real>& mesh, 
+    std::vector<Tetrahedron<Real>>& tets, 
     std::vector<Vec3f>& vertices);
 
+template <typename Real>
 void extractSurfaceTriangles(
-    const std::vector<Tetrahedron>& tets,
+    const std::vector<Tetrahedron<Real>>& tets,
     const std::vector<Vec3f>& vertices,
-    Mesh& surfaceMesh
+    Mesh<Real>& surfaceMesh
 );
 

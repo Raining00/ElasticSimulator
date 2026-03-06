@@ -71,8 +71,8 @@ GLuint CreateProgram(const char* vs_src, const char* fs_src)
     return program;
 }
 } // namespace
-
-struct RealtimeViewer::Impl
+template <typename Real>
+struct RealtimeViewer<Real>::Impl
 {
     GLFWwindow* window = nullptr;
     GLuint vao = 0;
@@ -282,19 +282,22 @@ struct RealtimeViewer::Impl
     }
 };
 
-RealtimeViewer::RealtimeViewer()
+template <typename Real>
+RealtimeViewer<Real>::RealtimeViewer()
     : impl_(new Impl())
 {
 }
 
-RealtimeViewer::~RealtimeViewer()
+template <typename Real>
+RealtimeViewer<Real>::~RealtimeViewer()
 {
     Shutdown();
     delete impl_;
     impl_ = nullptr;
 }
 
-bool RealtimeViewer::Initialize(const Mesh& surface_mesh, int width, int height)
+template <typename Real>
+bool RealtimeViewer<Real>::Initialize(const Mesh<Real>& surface_mesh, int width, int height)
 {
     impl_->width = std::max(width, 1);
     impl_->height = std::max(height, 1);
@@ -401,7 +404,8 @@ bool RealtimeViewer::Initialize(const Mesh& surface_mesh, int width, int height)
     return true;
 }
 
-void RealtimeViewer::Shutdown()
+template <typename Real>
+void RealtimeViewer<Real>::Shutdown()
 {
     if (impl_ == nullptr) {
         return;
@@ -436,18 +440,21 @@ void RealtimeViewer::Shutdown()
     }
 }
 
-bool RealtimeViewer::ShouldClose() const
+template <typename Real>
+bool RealtimeViewer<Real>::ShouldClose() const
 {
     return (impl_->window == nullptr) || (glfwWindowShouldClose(impl_->window) != 0);
 }
 
-void RealtimeViewer::PollEvents()
+template <typename Real>
+void RealtimeViewer<Real>::PollEvents()
 {
     glfwPollEvents();
     impl_->TickInput();
 }
 
-void RealtimeViewer::UpdateFromCuda(const Vec3f* d_vertices, size_t vertex_count)
+template <typename Real>
+void RealtimeViewer<Real>::UpdateFromCuda(const Vec3f* d_vertices, size_t vertex_count)
 {
     if (impl_->cuda_vbo == nullptr || d_vertices == nullptr || vertex_count != impl_->vertex_count) {
         return;
@@ -467,7 +474,8 @@ void RealtimeViewer::UpdateFromCuda(const Vec3f* d_vertices, size_t vertex_count
     }
 }
 
-void RealtimeViewer::UpdateFromCuda(const Vec3d* d_vertices, size_t vertex_count)
+template <typename Real>
+void RealtimeViewer<Real>::UpdateFromCuda(const Vec3d* d_vertices, size_t vertex_count)
 {
     if (impl_->cuda_vbo == nullptr || d_vertices == nullptr || vertex_count != impl_->vertex_count) {
         return;
@@ -487,7 +495,8 @@ void RealtimeViewer::UpdateFromCuda(const Vec3d* d_vertices, size_t vertex_count
     }
 }
 
-void RealtimeViewer::RenderFrame()
+template <typename Real>
+void RealtimeViewer<Real>::RenderFrame()
 {
     if (impl_->window == nullptr) {
         return;
@@ -511,9 +520,13 @@ void RealtimeViewer::RenderFrame()
     glfwSwapBuffers(impl_->window);
 }
 
-RealtimeViewer::CameraMode RealtimeViewer::GetCameraMode() const
+template <typename Real>
+typename RealtimeViewer<Real>::CameraMode RealtimeViewer<Real>::GetCameraMode() const
 {
     return impl_->mode;
 }
+
+template class RealtimeViewer<float>;
+template class RealtimeViewer<double>;
 
 

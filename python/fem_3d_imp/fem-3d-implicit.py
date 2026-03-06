@@ -309,8 +309,8 @@ class Object:
 
         for i in range(self.vn):
             for j in ti.static(range(self.dim)):
-                self.x[i*self.dim+j] = self.velocity[i][j] # initial values
-                self.b[i*self.dim+j] = self.velocity[i][j] + self.dt / self.node_mass * self.force[i][j]
+                self.x[i*self.dim+j] = self.dt * self.velocity[i][j] # initial values
+                self.b[i*self.dim+j] = self.dt * self.velocity[i][j] + (self.dt * self.dt / self.node_mass) * self.force[i][j]
 
     @ti.kernel
     def time_integrate(self, floor_height:ti.f32):
@@ -323,12 +323,17 @@ class Object:
 
             if self.method == 0:
                 self.velocity[i] += ( self.force[i] / self.node_mass + ti.Vector([0, -10, 0])  ) * self.dt
+                self.node[i] += self.velocity[i] * self.dt
             else:
-                self.velocity[i] = ti.Vector([self.x[i*3+0], self.x[i*3+1], self.x[i*3+2]])
+                # self.velocity[i] = ti.Vector([self.x[i*3+0], self.x[i*3+1], self.x[i*3+2]])
+                dx = ti.Vector([self.x[i*3+0], self.x[i*3+1], self.x[i*3+2]])
+                self.node[i] += dx
+                # update velocity for the next step
+                self.velocity[i] = dx / self.dt
 
             # self.velocity[i] *= math.exp(self.dt*-6)
 
-            self.node[i] += self.velocity[i] * self.dt
+            # self.node[i] += self.velocity[i] * self.dt
 
             if self.node[i].y < floor_height:
                 self.node[i].y = floor_height
@@ -451,8 +456,7 @@ ti.init(arch=ti.cpu)
 cam = Camera()
 floor = Floor(-2, 4)
 # obj = Object('tetrahedral-models/cube.1')
-obj = Object('D:/Code/Taichi-master/fem_3d_imp/tetrahedral-models/ellell.1', 0)
-
+obj = Object('./python/fem_3d_imp/tetrahedral-models/ellell.1', 0)
 
 
 # simulation parameters

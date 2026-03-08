@@ -158,11 +158,10 @@ __device__ mat3<Real> P_NeoHookean(const mat3<Real>& F, Real mu, Real lambda)
 // ─────────────────────────────────────────────────────────────────────────────
 
 template <typename Real>
-__global__ void k_ComputeForcesAndMass(
+__global__ void k_ComputeForces(
     const Tetrahedron<Real>* __restrict__ tets,
     const Vector<Real, 3>* __restrict__ vertex,
     Vector<Real, 3>* force,
-    Real* mass,
     int                             numTets)
 {
     using Vec3 = Vector<Real, 3>;
@@ -178,7 +177,7 @@ __global__ void k_ComputeForcesAndMass(
     int i2 = tet.verticesIndex.z;
     int i3 = tet.verticesIndex.w;
 
-    Real V0 = static_cast<Real>(tet.volume); // rest volume
+    Real V0 = tet.volume; // rest volume
 
     // ─── Deformation gradient ──────────────────────────────────────────────
     Mat3 F = computeF<Real>(tet, vertex);
@@ -198,8 +197,8 @@ __global__ void k_ComputeForcesAndMass(
     // f = -V0 * P * Dm^{-T}   (distributed to the four nodes)
     // The force on node 1,2,3 = -V0 * P * col(Dm^{-T}, 0/1/2)
     // Force on node 0 = -(f1+f2+f3)
-    Mat3 DmInv;
-    for (int i = 0; i < 9; ++i) DmInv[i] = static_cast<Real>(tet.Dm_inv[i]);
+    Mat3 DmInv = tet.Dm_inv;
+    // for (int i = 0; i < 9; ++i) DmInv[i] = static_cast<Real>(tet.Dm_inv[i]);
     Mat3 DmInvT = Mat3::transpose(DmInv);
     Mat3 H = P * DmInvT * (-V0);   // 3x3, columns = forces on nodes 1,2,3
 
@@ -211,28 +210,22 @@ __global__ void k_ComputeForcesAndMass(
              -f1.z - f2.z - f3.z };
 
     // Atomic scatter to vertex force array
-    atomicAdd(&force[i0].x, f0.x);
-    atomicAdd(&force[i0].y, f0.y);
-    atomicAdd(&force[i0].z, f0.z);
+    atomicAdd(&force[i0][0], f0[0]);
+    atomicAdd(&force[i0][1], f0[1]);
+    atomicAdd(&force[i0][2], f0[2]);
 
-    atomicAdd(&force[i1].x, f1.x);
-    atomicAdd(&force[i1].y, f1.y);
-    atomicAdd(&force[i1].z, f1.z);
+    atomicAdd(&force[i1][0], f1[0]);
+    atomicAdd(&force[i1][1], f1[1]);
+    atomicAdd(&force[i1][2], f1[2]);
 
-    atomicAdd(&force[i2].x, f2.x);
-    atomicAdd(&force[i2].y, f2.y);
-    atomicAdd(&force[i2].z, f2.z);
+    atomicAdd(&force[i2][0], f2[0]);
+    atomicAdd(&force[i2][1], f2[1]);
+    atomicAdd(&force[i2][2], f2[2]);
 
-    atomicAdd(&force[i3].x, f3.x);
-    atomicAdd(&force[i3].y, f3.y);
-    atomicAdd(&force[i3].z, f3.z);
+    atomicAdd(&force[i3][0], f3[0]);
+    atomicAdd(&force[i3][1], f3[1]);
+    atomicAdd(&force[i3][2], f3[2]);
 
-    // ─── Mass distribution (1/4 of tet mass to each vertex) ───────────────
-    Real tetMass = params.density * V0 * static_cast<Real>(0.25);
-    atomicAdd(&mass[i0], tetMass);
-    atomicAdd(&mass[i1], tetMass);
-    atomicAdd(&mass[i2], tetMass);
-    atomicAdd(&mass[i3], tetMass);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -284,7 +277,6 @@ __global__ void k_Integrate(
 
     // Reset force and mass for next substep
     force[vid] = Vec3{ static_cast<Real>(0), static_cast<Real>(0), static_cast<Real>(0) };
-    mass[vid] = static_cast<Real>(0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -335,6 +327,7 @@ template <typename Real>
 __global__ void k_ComputeTetInitVolume(
     Tetrahedron<Real>* tets,
     const Vector<Real, 3>* __restrict__ vertex,
+    Real* mass,
     int numTets)
 {
     using Vec3 = Vector<Real, 3>;
@@ -342,6 +335,7 @@ __global__ void k_ComputeTetInitVolume(
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= numTets) return;
 
+    const DevParams<Real>& params = GetDevParams<Real>();
     Tetrahedron<Real>& tet = tets[tid];
 
     int i0 = tet.verticesIndex.x;
@@ -358,7 +352,14 @@ __global__ void k_ComputeTetInitVolume(
 
     // Volume = |det(Dm)| / 6
     Real det = Mat3::determinant(Dm);
-    tet.volume = static_cast<float>(fabs(static_cast<double>(det)) / 6.0);
+    tet.volume = fabs(det / 6.0);
+
+    Real tetMass = params.density * tet.volume * static_cast<Real>(0.25);
+    atomicAdd(&mass[i0], tetMass);
+    atomicAdd(&mass[i1], tetMass);
+    atomicAdd(&mass[i2], tetMass);
+    atomicAdd(&mass[i3], tetMass);
+
     auto dminv = Mat3::inverse(Dm);
     for (int i = 0; i < 9; ++i) {
         tet.Dm_inv[i] = static_cast<float>(dminv[i]);
@@ -467,7 +468,7 @@ void ElasticitySolverT<Real>::ComputeTetInitVolume()
 {
     int numTets = static_cast<int>(h_tet.size());
 
-    k_ComputeTetInitVolume<Real><<<grid1D(numTets), 256>>>(d_tet, d_vertex, numTets);
+    k_ComputeTetInitVolume<Real><<<grid1D(numTets), 256>>>(d_tet, d_vertex, d_mass, numTets);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -500,8 +501,8 @@ void ElasticitySolverT<Real>::Step_Explicit()
     int numTets = static_cast<int>(h_tet.size());
     int numVerts = static_cast<int>(h_vertex.size());
 
-    k_ComputeForcesAndMass<Real><<<grid1D(numTets), 256>>>(
-        d_tet, d_vertex, d_force, d_mass, numTets);
+    k_ComputeForces<Real><<<grid1D(numTets), 256>>>(
+        d_tet, d_vertex, d_force, numTets);
     CUDA_CHECK(cudaGetLastError());
 
     k_Integrate<Real><<<grid1D(numVerts), 256>>>(
@@ -524,8 +525,8 @@ void ElasticitySolverT<Real>::Step_Implicit()
     int numTets = static_cast<int>(h_tet.size());
     int numVerts = static_cast<int>(h_vertex.size());
 
-    k_ComputeForcesAndMass<Real><<<grid1D(numTets), 256>>>(
-        d_tet, d_vertex, d_force, d_mass, numTets);
+    k_ComputeForces<Real><<<grid1D(numTets), 256>>>(
+        d_tet, d_vertex, d_force, numTets);
     CUDA_CHECK(cudaGetLastError());
 
     k_integrateImplicit<Real><<<grid1D(numVerts), 256>>>(

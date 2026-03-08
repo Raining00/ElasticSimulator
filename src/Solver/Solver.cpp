@@ -63,8 +63,6 @@ void ElasticitySolverT<Real>::Initialize(const Mesh<Real>& mesh)
     DataTransfer(h_tet, h_vertex);
     params_ready = false;
     info_printed = false;
-
-    ComputeTetInitVolume();
 }
 
 
@@ -152,6 +150,9 @@ void ElasticitySolverT<Real>::Simulate(unsigned int total_frame, bool export_res
     std::cout << "Starting simulation: " << total_frame << " frames, "
         << h_params.substeps << " substeps/frame." << std::endl;
 
+    std::cout << "Precomputing volume and mass...." << std::endl;
+    ComputeTetInitVolume();
+
     for (unsigned int frame = 0; frame < total_frame; ++frame) {
         for (unsigned int sub = 0; sub < h_params.substeps; ++sub) {
             Step();
@@ -173,6 +174,8 @@ void ElasticitySolverT<Real>::SimulateFrame(bool export_result)
 {
     if (!params_ready) {
         SetParams();
+        // precompute volumes and mass.
+        ComputeTetInitVolume();
         params_ready = true;
     }
     if (!info_printed) {

@@ -21,6 +21,9 @@ bool ElasticitySolverT<Real>::DataTransfer(const std::vector<Tetrahedron<Real>>&
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_tet), tets.size() * sizeof(Tetrahedron<Real>)));
     CUDA_CHECK(cudaMemcpy(d_tet, tets.data(), tets.size() * sizeof(Tetrahedron<Real>), cudaMemcpyHostToDevice));
 
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_F), tets.size() * sizeof(mat3<Real>)));
+    //CUDA_CHECK(cudaMemset(&d_F, 0, tets.size() * sizeof(mat3<Real>));
+
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_vertex), vertices.size() * sizeof(Vec3)));
     CUDA_CHECK(cudaMemcpy(d_vertex, vertices.data(), vertices.size() * sizeof(Vec3), cudaMemcpyHostToDevice));
 
@@ -38,6 +41,7 @@ bool ElasticitySolverT<Real>::DataTransfer(const std::vector<Tetrahedron<Real>>&
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_mass), vertices.size() * sizeof(Real)));
     // Initialize masses to zero (this would typically be computed based on density and volume)
     CUDA_CHECK(cudaMemset(d_mass, 0, vertices.size() * sizeof(Real)));
+
     
     return true;
 }
@@ -112,6 +116,7 @@ ElasticitySolverT<Real>::~ElasticitySolverT()
     cudaFree(d_vertex_velocity);
     cudaFree(d_mass);
     cudaFree(d_force);
+    cudaFree(d_F);
 }
 
 template <typename Real>

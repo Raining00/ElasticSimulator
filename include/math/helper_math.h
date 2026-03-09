@@ -2,7 +2,7 @@
 #define HELPER_MATH_H
 
 #include "math/Vector.hpp"
-
+#include "math/matrix.hpp"
 #include <cmath>
 
 typedef unsigned int uint;
@@ -233,6 +233,15 @@ inline __host__ __device__ Vec4f smoothstep(Vec4f a, Vec4f b, Vec4f x)
 {
     Vec4f y = clamp((x - a) / (b - a), 0.0f, 1.0f);
     return y * y * (make_vec4f(3.0f) - make_vec4f(2.0f) * y);
+}
+
+template <typename Real>
+inline __host__ __device__ mat3<Real> crossProductMatrix(Vector<Real, 3> vec)
+{
+    mat3<Real> crossProductMat( 0,     -vec[2], vec[1],
+                         vec[2], 0,     -vec[0],
+                        -vec[1], vec[9], 0);
+    return crossProductMat;
 }
 
 #endif

@@ -168,6 +168,7 @@ __global__ void k_ComputeForces(
     const Tetrahedron<Real>* __restrict__ tets,
     const Vector<Real, 3>* __restrict__ vertex,
     Vector<Real, 3>* force,
+    mat3<Real>* d_F,
     int                             numTets)
 {
     using Vec3 = Vector<Real, 3>;
@@ -178,15 +179,16 @@ __global__ void k_ComputeForces(
 
     const Tetrahedron<Real>& tet = tets[tid];
 
-    int i0 = tet.verticesIndex.x;
-    int i1 = tet.verticesIndex.y;
-    int i2 = tet.verticesIndex.z;
-    int i3 = tet.verticesIndex.w;
+    int i0 = tet.verticesIndex[0];
+    int i1 = tet.verticesIndex[1];
+    int i2 = tet.verticesIndex[2];
+    int i3 = tet.verticesIndex[3];
 
     Real V0 = tet.volume; // rest volume
 
     // ─── Deformation gradient ──────────────────────────────────────────────
     Mat3 F = computeF<Real>(tet, vertex);
+    d_F[tid] = F;
 
     // ─── First Piola-Kirchhoff stress ──────────────────────────────────────
     Mat3 P;
@@ -260,26 +262,17 @@ __global__ void k_Integrate(
 
     // Add gravity
     Vec3 f = force[vid];
-    f.x += m * g.x;
-    f.y += m * g.y;
-    f.z += m * g.z;
+    f += m * g;
 
     // Acceleration
-    Vec3 a{ f.x / m, f.y / m, f.z / m };
+    Vec3 a = f / m;
 
     // Symplectic Euler
     Vec3 v = velocity[vid];
-    v.x = v.x * (static_cast<Real>(1) - damping) + a.x * dt;
-    v.y = v.y * (static_cast<Real>(1) - damping) + a.y * dt;
-    v.z = v.z * (static_cast<Real>(1) - damping) + a.z * dt;
-
-    Vec3 x = vertex[vid];
-    x.x += v.x * dt;
-    x.y += v.y * dt;
-    x.z += v.z * dt;
+    v = v * (static_cast<Real>(1) - damping) + a * dt;
 
     velocity[vid] = v;
-    vertex[vid] = x;
+    vertex[vid] += v * dt;
 
     // Reset force and mass for next substep
     force[vid] = Vec3{ static_cast<Real>(0), static_cast<Real>(0), static_cast<Real>(0) };
@@ -326,7 +319,7 @@ __global__ void k_BoundaryCheck(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Kernel 4 �?initialise Dm_inv and rest volume for each tetrahedron
+// Kernel 4 initialise Dm_inv and rest volume for each tetrahedron
 // ─────────────────────────────────────────────────────────────────────────────
 
 template <typename Real>
@@ -344,10 +337,10 @@ __global__ void k_ComputeTetInitVolume(
     const DevParams<Real>& params = GetDevParams<Real>();
     Tetrahedron<Real>& tet = tets[tid];
 
-    int i0 = tet.verticesIndex.x;
-    int i1 = tet.verticesIndex.y;
-    int i2 = tet.verticesIndex.z;
-    int i3 = tet.verticesIndex.w;
+    int i0 = tet.verticesIndex[0];
+    int i1 = tet.verticesIndex[1];
+    int i2 = tet.verticesIndex[2];
+    int i3 = tet.verticesIndex[3];
 
     Vec3 x0 = vertex[i0];
     Vec3 x1 = vertex[i1];
@@ -381,40 +374,23 @@ __global__ void K_ComputeK(
     const Vector<Real, 3>* __restrict__ vertex,
     const Vector<Real, 3>* __restrict__ velocity,
     const Vector<Real, 3>* __restrict__ force,
+    const mat3<Real>* __restrict__ d_F,
     const Real* __restrict__ mass,
     const Real* __restrict__ K, // global stiffness matrix in COO format (preallocated)
     int numTets, int numVerts)
 {
+    using Mat3 = mat3<Real>;
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= numTets) return;
 
-    const Tetrahedron<Real>& tet = tets[tid];
-    const int ids[4] = {
-        tet.verticesIndex.x,
-        tet.verticesIndex.y,
-        tet.verticesIndex.z,
-        tet.verticesIndex.w
-    };
+    const Tetrahedron<Real>& tet = tets[tid]; 
+    const Vec4i ids = tet.verticesIndex;
 
-    const DevParams<Real>& params = GetDevParams<Real>();
-    const Real k_edge = (params.lambda + static_cast<Real>(2) * params.mu) * static_cast<Real>(tet.volume) * static_cast<Real>(0.25);
-    const Real k_diag = static_cast<Real>(3) * k_edge;
-    Real* __restrict__ K_out = const_cast<Real*>(K);
-    const int ndof = numVerts * 3;
+    Mat3 F = d_F[tid];
 
-    #pragma unroll
-    for (int a = 0; a < 4; ++a) {
-        const int ia3 = ids[a] * 3;
-        #pragma unroll
-        for (int b = 0; b < 4; ++b) {
-            const int ib3 = ids[b] * 3;
-            const Real kab = (a == b) ? k_diag : -k_edge;
-
-            atomicAdd(&K_out[(ia3 + 0) * ndof + (ib3 + 0)], kab);
-            atomicAdd(&K_out[(ia3 + 1) * ndof + (ib3 + 1)], kab);
-            atomicAdd(&K_out[(ia3 + 2) * ndof + (ib3 + 2)], kab);
-        }
-    }
+    // Compute dF / dx = (dD_s / dx) * (Dm_Inv)
+    Real* dDs_dx[12][9];
+    
 }
 
 template <typename Real>
@@ -491,9 +467,7 @@ template <typename Real>
 void ElasticitySolverT<Real>::SetInitialOffset(const Vec3& offset)
 {
     for (auto& v : h_vertex) {
-        v.x += offset.x;
-        v.y += offset.y;
-        v.z += offset.z;
+        v += offset;
     }
     CUDA_CHECK(cudaMemcpy(d_vertex,
         h_vertex.data(),
@@ -508,7 +482,7 @@ void ElasticitySolverT<Real>::Step_Explicit()
     int numVerts = static_cast<int>(h_vertex.size());
 
     k_ComputeForces<Real><<<grid1D(numTets), 256>>>(
-        d_tet, d_vertex, d_force, numTets);
+        d_tet, d_vertex, d_force, d_F, numTets);
     CUDA_CHECK(cudaGetLastError());
 
     k_Integrate<Real><<<grid1D(numVerts), 256>>>(
@@ -532,7 +506,7 @@ void ElasticitySolverT<Real>::Step_Implicit()
     int numVerts = static_cast<int>(h_vertex.size());
 
     k_ComputeForces<Real><<<grid1D(numTets), 256>>>(
-        d_tet, d_vertex, d_force, numTets);
+        d_tet, d_vertex, d_force, d_F, numTets);
     CUDA_CHECK(cudaGetLastError());
 
     k_integrateImplicit<Real><<<grid1D(numVerts), 256>>>(

@@ -81,6 +81,7 @@ private:
 	Vec3* d_vertex_velocity;
     Vec3* d_force;
     Real* d_mass;
+    mat3<Real>* d_F;
     bool params_ready = false;
     bool info_printed = false;
 };

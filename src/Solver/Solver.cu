@@ -141,14 +141,20 @@ template <typename Real>
 __device__ mat3<Real> P_NeoHookean(const mat3<Real>& F, Real mu, Real lambda)
 {
     using Mat3 = mat3<Real>;
+    using Vec3 = Vector<Real, 3>;
     Real J = Mat3::determinant(F);
     // Clamp J to avoid singularity
     J = (J > static_cast<Real>(1e-4)) ? J : static_cast<Real>(1e-4);
 
-    Mat3 Finvt = Mat3::transpose(Mat3::inverse(F));
+    // Mat3 Finvt = Mat3::transpose(Mat3::inverse(F));
+    Vec3 col0 = F.column(0);
+    Vec3 col1 = F.column(1);
+    Vec3 col2 = F.column(2);
+    Mat3 adjFT = Mat3(cross(col1, col2), cross(col2, col0), cross(col0, col1));
 
     // mu*(F - F^{-T}) + lambda*(J-1)*J * F^{-T}
-    Mat3 P = (F - Finvt) * mu + Finvt * (lambda * (J - static_cast<Real>(1)) * J);
+    // Mat3 P = (F - Finvt) * mu + Finvt * (lambda * (J - static_cast<Real>(1)) * J);
+    Mat3 P = mu * F + (lambda * (J -1) - mu) * adjFT;
     return P;
 }
 

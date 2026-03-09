@@ -22,6 +22,12 @@ inline __host__ __device__ Vec2f make_vec2f(Vec3f a) { return Vec2f{a.x, a.y}; }
 inline __host__ __device__ Vec2f make_vec2f(Vec2i a) { return Vec2f{static_cast<float>(a.x), static_cast<float>(a.y)}; }
 inline __host__ __device__ Vec2f make_vec2f(Vec2u a) { return Vec2f{static_cast<float>(a.x), static_cast<float>(a.y)}; }
 
+inline __host__ __device__ Vec2d make_vec2d(double x, double y) { return Vec2d{x, y}; }
+inline __host__ __device__ Vec2d make_vec2d(double s) { return Vec2d{s}; }
+inline __host__ __device__ Vec2d make_vec2d(Vec3d a) { return Vec2d{a.x, a.y}; }
+inline __host__ __device__ Vec2d make_vec2d(Vec2i a) { return Vec2d{static_cast<double>(a.x), static_cast<double>(a.y)}; }
+inline __host__ __device__ Vec2d make_vec2d(Vec2u a) { return Vec2d{static_cast<double>(a.x), static_cast<double>(a.y)}; }
+
 inline __host__ __device__ Vec2i make_vec2i(int x, int y) { return Vec2i{x, y}; }
 inline __host__ __device__ Vec2i make_vec2i(int s) { return Vec2i{s}; }
 inline __host__ __device__ Vec2i make_vec2i(Vec3i a) { return Vec2i{a.x, a.y}; }
@@ -40,6 +46,14 @@ inline __host__ __device__ Vec3f make_vec3f(Vec2f a, float s) { return Vec3f{a.x
 inline __host__ __device__ Vec3f make_vec3f(Vec4f a) { return Vec3f{a.x, a.y, a.z}; }
 inline __host__ __device__ Vec3f make_vec3f(Vec3i a) { return Vec3f{static_cast<float>(a.x), static_cast<float>(a.y), static_cast<float>(a.z)}; }
 inline __host__ __device__ Vec3f make_vec3f(Vec3u a) { return Vec3f{static_cast<float>(a.x), static_cast<float>(a.y), static_cast<float>(a.z)}; }
+
+inline __host__ __device__ Vec3d make_vec3d(double x, double y, double z) { return Vec3d{x, y, z}; }
+inline __host__ __device__ Vec3d make_vec3d(double s) { return Vec3d{s}; }
+inline __host__ __device__ Vec3d make_vec3d(Vec2d a) { return Vec3d{a.x, a.y, 0.0f}; }
+inline __host__ __device__ Vec3d make_vec3d(Vec2d a, double s) { return Vec3d{a.x, a.y, s}; }
+inline __host__ __device__ Vec3d make_vec3d(Vec4d a) { return Vec3d{a.x, a.y, a.z}; }
+inline __host__ __device__ Vec3d make_vec3d(Vec3i a) { return Vec3d{static_cast<double>(a.x), static_cast<double>(a.y), static_cast<float>(a.z)}; }
+inline __host__ __device__ Vec3d make_vec3d(Vec3u a) { return Vec3d{static_cast<double>(a.x), static_cast<double>(a.y), static_cast<float>(a.z)}; }
 
 inline __host__ __device__ Vec3i make_vec3i(int x, int y, int z) { return Vec3i{x, y, z}; }
 inline __host__ __device__ Vec3i make_vec3i(int s) { return Vec3i{s}; }
@@ -136,6 +150,14 @@ inline __host__ __device__ Vector<T, N> normalize(const Vector<T, N>& v)
 inline __host__ __device__ Vec3f cross(Vec3f a, Vec3f b)
 {
     return make_vec3f(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x);
+}
+
+inline __host__ __device__ Vec3d cross(Vec3d a, Vec3d b)
+{
+    return make_vec3d(
         a.y * b.z - a.z * b.y,
         a.z * b.x - a.x * b.z,
         a.x * b.y - a.y * b.x);

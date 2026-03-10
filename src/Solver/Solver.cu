@@ -379,6 +379,7 @@ __global__ void K_ComputeK(
     const Real* __restrict__ K, // global stiffness matrix in COO format (preallocated)
     int numTets, int numVerts)
 {
+    using Vec3 = Vector<Real, 3>;
     using Mat3 = mat3<Real>;
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= numTets) return;
@@ -389,8 +390,47 @@ __global__ void K_ComputeK(
     Mat3 F = d_F[tid];
 
     // Compute dF / dx = (dD_s / dx) * (Dm_Inv)
-    Real* dDs_dx[12][9];
-    
+    /**
+     * All about dDs / dx
+     * vertex1 of tet:
+     * dDs / dx0 = [-1, -1, -1,      dDs / dx1 = [ 0,  0,  0       dDs / dx2 = [ 0,  0,  0
+     *                0,  0,  0,                    -1, -1, -1                      0,  0,  0,
+     *                0,  0,  0]                     0,  0,  0]                    -1, -1, -1]
+     * vertex2 of tet:
+     * dDs / dx3 = [ 1, 0, 0,        dDs / dx4 = [0, 0, 0,         dDs / dx5 = [0, 0, 0,
+     *               0, 0, 0,                     1, 0, 0,                      0, 0, 0,
+     *               0, 0, 0]                     0, 0, 0]                      1, 0, 0]
+     * vertex3 of tet:
+     * dDs_dx6 = [0, 1, 0,           dDs / dx7 = [0, 0, 0,         dDs / dx8 = [0, 0, 0,
+     *            0, 0, 0,                        0, 1, 0,                      0 ,0, 0,
+     *            0, 0, 0]                        0, 0, 0]                      0, 1, 0]
+     * vertex4 of tet:
+     * dDs / dx9 = [0, 0, 1          dDs / dx10 = [0, 0, 0,        dDs / dx11 = [0, 0, 0,
+     *              0, 0, 0,                       0, 0, 1,                      0, 0, 0,
+     *              0, 0, 0]                       0, 0, 0]                      0, 0, 1]
+     * 
+     */
+    Mat3 dF_dx[12];
+    Mat3  Dm_invT = Mat3::transpose(Dm_inv);
+    Vec3 g[4]; // gradients of shape functions
+
+    // g0, g1, g2 from Dm_inv^T columns
+    // g3 = -g0 - g1 - g2
+    g[1] = Dm_invT.column(0);
+    g[2] = Dm_invT.column(1);
+    g[3] = Dm_invT.column(2);
+    g[0] = - (g[1] + g[2] + g[3]);
+    #pragma unroll
+    for (int a = 0; a < 4; ++a) {
+        #pragma unroll
+        for (int c = 0; c < 3; ++c) {
+            Mat3 dF(Real(0));
+            for (int j = 0; j < 3; ++j) {
+                dF[c][j] = g[a][j];
+            }
+            dF_dx[a * 3 + c] = dF;
+        }
+    }
 }
 
 template <typename Real>

@@ -3,6 +3,27 @@
 #include <iostream>
 
 /**
+ * All about dDs / dx
+ * vertex1 of tet:
+ * dDs / dx0 = [-1, -1, -1,      dDs / dx1 = [ 0,  0,  0       dDs / dx2 = [ 0,  0,  0
+ *                0,  0,  0,                    -1, -1, -1                      0,  0,  0,
+ *                0,  0,  0]                     0,  0,  0]                    -1, -1, -1]
+ * vertex2 of tet:
+ * dDs / dx3 = [ 1, 0, 0,        dDs / dx4 = [0, 0, 0,         dDs / dx5 = [0, 0, 0,
+ *               0, 0, 0,                     1, 0, 0,                      0, 0, 0,
+ *               0, 0, 0]                     0, 0, 0]                      1, 0, 0]
+ * vertex3 of tet:
+ * dDs_dx6 = [0, 1, 0,           dDs / dx7 = [0, 0, 0,         dDs / dx8 = [0, 0, 0,
+ *            0, 0, 0,                        0, 1, 0,                      0 ,0, 0,
+ *            0, 0, 0]                        0, 0, 0]                      0, 1, 0]
+ * vertex4 of tet:
+ * dDs / dx9 = [0, 0, 1          dDs / dx10 = [0, 0, 0,        dDs / dx11 = [0, 0, 0,
+ *              0, 0, 0,                       0, 0, 1,                      0, 0, 0,
+ *              0, 0, 0]                       0, 0, 0]                      0, 0, 1]
+ * 
+ */
+
+/**
 *-8.42231 -2.64442 -1.49155
 3.38562 1.98684 7.69219
 3.77723 7.33149 0.81639
@@ -17,26 +38,31 @@ int main()
 						3.77723, 7.33149, 0.81639);
 	mat3<double> Dm_invT = mat3<double>::transpose(Dm_inv);
 
+	#pragma unroll
 	for (int i = 0; i < 12; i++)
 	{
 		dDs_dx[i] = mat3<double>(double(0));
 		dF_dx[i] = mat3<double>(double(0));
 	}
 
+	#pragma unroll
 	for (int i = 1; i < 4; i++)
 	{
 		for (int j = 0; j < 3; j++)
 			dDs_dx[i * 3 + j](j, (i - 1)) = 1;
 	}
 
+	#pragma unroll
 	for (int i = 0; i < 3; i++)
 		dDs_dx[i] = static_cast<double>(-1) * (dDs_dx[i + 3] + dDs_dx[i + 6] + dDs_dx[i + 9]);
 
+	#pragma unroll
 	for (int i = 0; i < 12; i++)
 	{
 		dF_dx[i] = dDs_dx[i] * Dm_inv;
 	}
 
+	#pragma unroll
 	for (int i = 0; i < 12; i++)
 	{
 		mat3<double> tmp_mat = dDs_dx[i];
@@ -49,6 +75,7 @@ int main()
 		}
 	}
 
+	#pragma unroll
 	for (int i = 0; i < 12; i++)
 	{
 		mat3<double> tmp_mat = dF_dx[i];
@@ -79,6 +106,8 @@ int main()
 			dF_dx[a * 3 + c] = dF;
 		}
 	}
+
+	#pragma unroll
 	for (int i = 0; i < 12; i++)
 	{
 		mat3<double> tmp_mat = dF_dx[i];

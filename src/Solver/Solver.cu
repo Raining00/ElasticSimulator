@@ -167,8 +167,8 @@ template <typename Real>
 __global__ void k_ComputeForces(
     const Tetrahedron<Real>* __restrict__ tets,
     const Vector<Real, 3>* __restrict__ vertex,
-    Vector<Real, 3>* force,
-    mat3<Real>* d_F,
+    Vector<Real, 3>* __restrict__ force,
+    mat3<Real>* __restrict__ d_F,
     int                             numTets)
 {
     using Vec3 = Vector<Real, 3>;
@@ -326,7 +326,7 @@ template <typename Real>
 __global__ void k_ComputeTetInitVolume(
     Tetrahedron<Real>* tets,
     const Vector<Real, 3>* __restrict__ vertex,
-    Real* mass,
+    Real* __restrict__ mass,
     int numTets)
 {
     using Vec3 = Vector<Real, 3>;
@@ -366,7 +366,8 @@ __global__ void k_ComputeTetInitVolume(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Kernel 5 �?Compute stiffness matrix for each tetrahedron
+// Kernel 5 Compute stiffness matrix for each tetrahedron
+// df / dx = vec(dF / dx)^T * vec(dp / dF) * vec(dF / dx)
 // ─────────────────────────────────────────────────────────────────────────────
 template <typename Real>
 __global__ void K_ComputeK(
@@ -389,27 +390,11 @@ __global__ void K_ComputeK(
 
     Mat3 F = d_F[tid];
 
-    // Compute dF / dx = (dD_s / dx) * (Dm_Inv)
     /**
-     * All about dDs / dx
-     * vertex1 of tet:
-     * dDs / dx0 = [-1, -1, -1,      dDs / dx1 = [ 0,  0,  0       dDs / dx2 = [ 0,  0,  0
-     *                0,  0,  0,                    -1, -1, -1                      0,  0,  0,
-     *                0,  0,  0]                     0,  0,  0]                    -1, -1, -1]
-     * vertex2 of tet:
-     * dDs / dx3 = [ 1, 0, 0,        dDs / dx4 = [0, 0, 0,         dDs / dx5 = [0, 0, 0,
-     *               0, 0, 0,                     1, 0, 0,                      0, 0, 0,
-     *               0, 0, 0]                     0, 0, 0]                      1, 0, 0]
-     * vertex3 of tet:
-     * dDs_dx6 = [0, 1, 0,           dDs / dx7 = [0, 0, 0,         dDs / dx8 = [0, 0, 0,
-     *            0, 0, 0,                        0, 1, 0,                      0 ,0, 0,
-     *            0, 0, 0]                        0, 0, 0]                      0, 1, 0]
-     * vertex4 of tet:
-     * dDs / dx9 = [0, 0, 1          dDs / dx10 = [0, 0, 0,        dDs / dx11 = [0, 0, 0,
-     *              0, 0, 0,                       0, 0, 1,                      0, 0, 0,
-     *              0, 0, 0]                       0, 0, 0]                      0, 0, 1]
      * 
-     */
+     * Compute dF / dx = (dD_s / dx) * (Dm_Inv)
+     * 
+    */
     Mat3 dF_dx[12];
     Mat3 Dm_inv = tet.Dm_inv;
     Mat3 Dm_invT = Mat3::transpose(Dm_inv);
@@ -427,11 +412,26 @@ __global__ void K_ComputeK(
         for (int c = 0; c < 3; ++c) {
             Mat3 dF(Real(0));
             for (int j = 0; j < 3; ++j) {
-                dF[c][j] = g[a][j];
+                dF(c, j) = g[a][j];
             }
             dF_dx[a * 3 + c] = dF;
         }
     }
+
+    /**
+     * 
+     * Compute dP / dF = mu * (dF / dFi) + lambda * (dJ / dFi) * (dJ / dF) + [lambda(J - 1) - mu] * (d^2 j / dFdFi)
+     * 
+     * vec(dF / dFi) = I9x9
+     * vec((dJ / dFi) * (dJ / dF)) = vec(dJ / dF) * vec(dJ / dF)^T
+     * dJ_dF = [f1 x f2 | f2 x f0) | f0 x f1];
+     * vec(d^2 j / dFdFi) = crossproduct[        0           crossproduct(-f2)    crossproduct(f1)
+     *                                   crossproduct(-f2)         0              crossproduct(-f0)
+     *                                   crossproduct(-f1)   crossproduct(f0)           0          ]
+     * Here f0, f1, f2 are the columes of deformation gradient matrix F.
+    */
+   Mat3 dJ_dF((cross(F.column(1), F.column(2)), cross(F.column(2), F.column(0)), cross(F.column(0), F.column(1))));
+//    Real* Vec_dJdF;
 }
 
 template <typename Real>
@@ -588,5 +588,3 @@ template void ElasticitySolverT<double>::Step_Implicit();
 
 template void ElasticitySolverT<float>::Step();
 template void ElasticitySolverT<double>::Step();
-
-

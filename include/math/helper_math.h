@@ -244,5 +244,6 @@ inline __host__ __device__ mat3<Real> crossProductMatrix(Vector<Real, 3> vec)
     return crossProductMat;
 }
 
+
 #endif
 

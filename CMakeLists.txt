@@ -1,71 +1,85 @@
 cmake_minimum_required(VERSION 3.18)
 
-project(ElasticSimulator)
+project(PhysicsBasedSimulator LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-find_package(CUDAToolkit REQUIRED)
-find_package(OpenGL REQUIRED)
-enable_language(CUDA)
-    
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-set(CMAKE_CUDA_ARCHITECTURES 75 80 86 87 89 90 100 110 120)
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets")
+find_package(CUDAToolkit REQUIRED)
+find_package(OpenGL REQUIRED)
 
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --extended-lambda")
+set(CMAKE_CUDA_ARCHITECTURES 75 80 86 87 89 90 100 110 120)
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets --extended-lambda")
 
 configure_file(
     ${CMAKE_SOURCE_DIR}/assets/ProjectPaths.h.in
     ${CMAKE_BINARY_DIR}/generated/ProjectPaths.h
 )
 
-# set output directories
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-# external dependencies
 add_subdirectory(extern/tetgen)
-# GLFW
 add_subdirectory(extern/glfw)
-# GLM
 add_subdirectory(extern/glm)
 
-# set source files
-file(GLOB_RECURSE SRC_FILES 
-    src/*.cpp 
-    src/*.cu 
-    include/*.h 
-    include/*.hpp
+add_library(ElasticBody
+    src/MeshToTet.cpp
+    src/Solver/Solver.cpp
+    src/Solver/Solver.cu
 )
 
-add_executable(ElasticSimulator
-    ${SRC_FILES}
-    main.cpp
-)
-
-# include directories
-target_include_directories(ElasticSimulator
-    PRIVATE
+target_include_directories(ElasticBody
+    PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/extern
-        ${CMAKE_CURRENT_SOURCE_DIR}/extern/glm
-        ${CMAKE_CURRENT_SOURCE_DIR}/extern/glfw/deps
+    PRIVATE
         ${CMAKE_BINARY_DIR}/generated
 )
 
-target_link_libraries(ElasticSimulator
-    PRIVATE
+target_link_libraries(ElasticBody
+    PUBLIC
         CUDA::cudart
         CUDA::cublas
         tet
+)
+
+set_target_properties(ElasticBody PROPERTIES
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
+add_library(render
+    src/Render/RealtimeViewer.cpp
+    src/Render/RealtimeViewerCuda.cu
+)
+
+target_include_directories(render
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/extern/glm
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/extern/glfw/deps
+)
+
+target_link_libraries(render
+    PUBLIC
+        ElasticBody
+    PRIVATE
+        CUDA::cudart
         glfw
         OpenGL::GL
 )
 
-set_target_properties(ElasticSimulator PROPERTIES
+set_target_properties(render PROPERTIES
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
     CUDA_SEPARABLE_COMPILATION ON
 )
+
+add_library(ElasticSimulator::ElasticBody ALIAS ElasticBody)
+add_library(ElasticSimulator::render ALIAS render)
+
+add_subdirectory(Example)

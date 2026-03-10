@@ -411,7 +411,8 @@ __global__ void K_ComputeK(
      * 
      */
     Mat3 dF_dx[12];
-    Mat3  Dm_invT = Mat3::transpose(Dm_inv);
+    Mat3 Dm_inv = tet.Dm_inv;
+    Mat3 Dm_invT = Mat3::transpose(Dm_inv);
     Vec3 g[4]; // gradients of shape functions
 
     // g0, g1, g2 from Dm_inv^T columns

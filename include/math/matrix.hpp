@@ -9,6 +9,13 @@
 
 #include "math/Vector.hpp"
 #include "math/quaternion.hpp"
+
+#ifdef __CUDACC__
+#define CUDA_UNROLL _Pragma("unroll")
+#else
+#define CUDA_UNROLL
+#endif
+
 template <typename Real>
 struct mat3 {
 	Real data[9];
@@ -330,6 +337,393 @@ struct mat3 {
 
 template<typename Real>
 __host__ __device__ __forceinline__ mat3<Real> operator* (Real f, const mat3<Real> &m) { return m*f; }
+
+
+template <typename Real, int Rows, int Cols>
+struct StaticMatrix
+{
+    static_assert(Rows > 0 && Cols > 0, "Matrix dimensions must be positive.");
+
+    Real data[Rows * Cols];
+
+    // ------------------------------------------------------------
+    // Constructors
+    // ------------------------------------------------------------
+    __host__ __device__ __forceinline__
+    StaticMatrix()
+    {
+        setZero();
+    }
+
+    __host__ __device__ __forceinline__
+    explicit StaticMatrix(Real value)
+    {
+        fill(value);
+    }
+
+	__host__ __device__
+		StaticMatrix(const StaticMatrix& other)
+	{
+		CUDA_UNROLL
+		for (int i = 0; i < Rows * Cols; ++i)
+			data[i] = other.data[i];
+	}
+
+	__host__ __device__
+		StaticMatrix& operator=(const StaticMatrix& other)
+	{
+		if (this != &other)
+		{
+			CUDA_UNROLL
+			for (int i = 0; i < Rows * Cols; ++i)
+				data[i] = other.data[i];
+		}
+		return *this;
+	}
+
+    // ------------------------------------------------------------
+    // Basic info
+    // ------------------------------------------------------------
+    __host__ __device__ __forceinline__
+    static constexpr int rows() { return Rows; }
+
+    __host__ __device__ __forceinline__
+    static constexpr int cols() { return Cols; }
+
+    __host__ __device__ __forceinline__
+    static constexpr int size() { return Rows * Cols; }
+
+    // ------------------------------------------------------------
+    // Element access (row-major)
+    // ------------------------------------------------------------
+    __host__ __device__ __forceinline__
+    Real& operator()(int r, int c)
+    {
+        return data[r * Cols + c];
+    }
+
+    __host__ __device__ __forceinline__
+    const Real& operator()(int r, int c) const
+    {
+        return data[r * Cols + c];
+    }
+
+    // For vectors (Cols == 1 or Rows == 1)
+    __host__ __device__ __forceinline__
+    Real& operator[](int i)
+    {
+        return data[i];
+    }
+
+    __host__ __device__ __forceinline__
+    const Real& operator[](int i) const
+    {
+        return data[i];
+    }
+
+    __host__ __device__ __forceinline__
+    Real* raw()
+    {
+        return data;
+    }
+
+    __host__ __device__ __forceinline__
+    const Real* raw() const
+    {
+        return data;
+    }
+
+    // ------------------------------------------------------------
+    // Fill / zero
+    // ------------------------------------------------------------
+    __host__ __device__ __forceinline__
+    void fill(Real value)
+    {
+        CUDA_UNROLL
+        for (int i = 0; i < Rows * Cols; ++i)
+            data[i] = value;
+    }
+
+    __host__ __device__ __forceinline__
+    void setZero()
+    {
+        fill(Real(0));
+    }
+
+    // ------------------------------------------------------------
+    // Identity (only for square matrices)
+    // ------------------------------------------------------------
+    __host__ __device__ __forceinline__
+    static StaticMatrix Identity()
+    {
+        static_assert(Rows == Cols, "Identity() requires a square matrix.");
+
+        StaticMatrix I;
+        I.setZero();
+        CUDA_UNROLL
+        for (int i = 0; i < Rows; ++i)
+            I(i, i) = Real(1);
+        return I;
+    }
+
+    // ------------------------------------------------------------
+    // Unary operators
+    // ------------------------------------------------------------
+    __host__ __device__ __forceinline__
+    StaticMatrix operator+() const
+    {
+        return *this;
+    }
+	 
+    __host__ __device__ __forceinline__
+    StaticMatrix operator-() const
+    {
+        StaticMatrix out;
+        CUDA_UNROLL
+        for (int i = 0; i < Rows * Cols; ++i)
+            out.data[i] = -data[i];
+        return out;
+    }
+
+    // ------------------------------------------------------------
+    // Compound assignment with another matrix
+    // ------------------------------------------------------------
+    __host__ __device__ __forceinline__
+    StaticMatrix& operator+=(const StaticMatrix& rhs)
+    {
+        CUDA_UNROLL
+        for (int i = 0; i < Rows * Cols; ++i)
+            data[i] += rhs.data[i];
+        return *this;
+    }
+
+    __host__ __device__ __forceinline__
+    StaticMatrix& operator-=(const StaticMatrix& rhs)
+    {
+        CUDA_UNROLL
+        for (int i = 0; i < Rows * Cols; ++i)
+            data[i] -= rhs.data[i];
+        return *this;
+    }
+
+    // ------------------------------------------------------------
+    // Compound assignment with scalar
+    // ------------------------------------------------------------
+    __host__ __device__ __forceinline__
+    StaticMatrix& operator*=(Real s)
+    {
+        CUDA_UNROLL
+        for (int i = 0; i < Rows * Cols; ++i)
+            data[i] *= s;
+        return *this;
+    }
+
+    __host__ __device__ __forceinline__
+    StaticMatrix& operator/=(Real s)
+    {
+        CUDA_UNROLL
+        for (int i = 0; i < Rows * Cols; ++i)
+            data[i] /= s;
+        return *this;
+    }
+
+    // ------------------------------------------------------------
+    // Utility
+    // ------------------------------------------------------------
+    __host__ __device__ __forceinline__
+    bool isZero(Real eps = Real(0)) const
+    {
+        CUDA_UNROLL
+        for (int i = 0; i < Rows * Cols; ++i)
+        {
+            Real v = data[i];
+            if (v > eps || v < -eps)
+                return false;
+        }
+        return true;
+    }
+};
+
+// ------------------------------------------------------------
+// Matrix + Matrix
+// ------------------------------------------------------------
+template <typename Real, int Rows, int Cols>
+__host__ __device__ __forceinline__
+StaticMatrix<Real, Rows, Cols>
+operator+(StaticMatrix<Real, Rows, Cols> lhs,
+          const StaticMatrix<Real, Rows, Cols>& rhs)
+{
+    lhs += rhs;
+    return lhs;
+}
+
+// ------------------------------------------------------------
+// Matrix - Matrix
+// ------------------------------------------------------------
+template <typename Real, int Rows, int Cols>
+__host__ __device__ __forceinline__
+StaticMatrix<Real, Rows, Cols>
+operator-(StaticMatrix<Real, Rows, Cols> lhs,
+          const StaticMatrix<Real, Rows, Cols>& rhs)
+{
+    lhs -= rhs;
+    return lhs;
+}
+
+// ------------------------------------------------------------
+// Matrix * scalar
+// ------------------------------------------------------------
+template <typename Real, int Rows, int Cols>
+__host__ __device__ __forceinline__
+StaticMatrix<Real, Rows, Cols>
+operator*(StaticMatrix<Real, Rows, Cols> lhs, Real s)
+{
+    lhs *= s;
+    return lhs;
+}
+
+// ------------------------------------------------------------
+// scalar * Matrix
+// ------------------------------------------------------------
+template <typename Real, int Rows, int Cols>
+__host__ __device__
+StaticMatrix<Real, Rows, Cols>
+operator*(Real s, StaticMatrix<Real, Rows, Cols> rhs)
+{
+    rhs *= s;
+    return rhs;
+}
+
+// ------------------------------------------------------------
+// Matrix / scalar
+// ------------------------------------------------------------
+template <typename Real, int Rows, int Cols>
+__host__ __device__
+StaticMatrix<Real, Rows, Cols>
+operator/(StaticMatrix<Real, Rows, Cols> lhs, Real s)
+{
+    lhs /= s;
+    return lhs;
+}
+
+// ------------------------------------------------------------
+// Matrix multiply
+// (M x K) * (K x N) = (M x N)
+// ------------------------------------------------------------
+template <typename Real, int M, int K, int N>
+__host__ __device__ __forceinline__
+StaticMatrix<Real, M, N>
+operator*(const StaticMatrix<Real, M, K>& A,
+          const StaticMatrix<Real, K, N>& B)
+{
+    StaticMatrix<Real, M, N> C;
+    C.setZero();
+
+    CUDA_UNROLL
+    for (int i = 0; i < M; ++i)
+    {
+        CUDA_UNROLL
+        for (int j = 0; j < N; ++j)
+        {
+            Real sum = Real(0);
+            CUDA_UNROLL
+            for (int k = 0; k < K; ++k)
+                sum += A(i, k) * B(k, j);
+            C(i, j) = sum;
+        }
+    }
+    return C;
+}
+
+// ------------------------------------------------------------
+// Transpose
+// ------------------------------------------------------------
+template <typename Real, int Rows, int Cols>
+__host__ __device__ __forceinline__
+StaticMatrix<Real, Cols, Rows>
+transpose(const StaticMatrix<Real, Rows, Cols>& A)
+{
+    StaticMatrix<Real, Cols, Rows> T;
+    CUDA_UNROLL
+    for (int i = 0; i < Rows; ++i)
+    {
+        CUDA_UNROLL
+        for (int j = 0; j < Cols; ++j)
+            T(j, i) = A(i, j);
+    }
+    return T;
+}
+
+// ------------------------------------------------------------
+// Dot product for vectors
+// ------------------------------------------------------------
+template <typename Real, int N>
+__host__ __device__ __forceinline__
+Real dot(const StaticMatrix<Real, N, 1>& a,
+         const StaticMatrix<Real, N, 1>& b)
+{
+    Real sum = Real(0);
+    CUDA_UNROLL
+    for (int i = 0; i < N; ++i)
+        sum += a[i] * b[i];
+    return sum;
+}
+
+// ------------------------------------------------------------
+// Squared norm
+// ------------------------------------------------------------
+template <typename Real, int N>
+__host__ __device__ __forceinline__
+Real squaredNorm(const StaticMatrix<Real, N, 1>& v)
+{
+    return dot(v, v);
+}
+
+template <typename Real> using Vec9     = StaticMatrix<Real, 9, 1>;
+template <typename Real> using Vec12    = StaticMatrix<Real, 12, 1>;
+template <typename Real> using Mat9x9   = StaticMatrix<Real, 9, 9>;
+template <typename Real> using Mat9x12  = StaticMatrix<Real, 9, 12>;
+template <typename Real> using Mat12x9  = StaticMatrix<Real, 12, 9>;
+template <typename Real> using Mat12x12 = StaticMatrix<Real, 12, 12>;
+
+/**
+ * Used for matrial hessian. (d^2 J)/(dFdfi) 
+ */
+template <typename Real, int BlockRows, int BlockCols>
+struct BlockMat3
+{
+    mat3<Real> blocks[BlockRows][BlockCols];
+
+    __host__ __device__ __forceinline__
+    mat3<Real>& operator()(int r, int c) { return blocks[r][c]; }
+
+    __host__ __device__ __forceinline__
+    const mat3<Real>& operator()(int r, int c) const { return blocks[r][c]; }
+};
+
+template <typename Real, int BR, int BC>
+__host__ __device__ __forceinline__
+StaticMatrix<Real, BR * 3, BC * 3> 
+FlattenBlockMat3(const BlockMat3<Real, BR, BC>& A)
+{
+    StaticMatrix<Real, BR * 3, BC * 3> out(Real(0));
+
+    for (int bi = 0; bi < BR; ++bi)
+    {
+        for (int bj = 0; bj < BC; ++bj)
+        {
+            const mat3<Real>& M = A(bi, bj);
+            for (int r = 0; r < 3; ++r)
+            {
+                for (int c = 0; c < 3; ++c)
+                {
+                    out(bi * 3 + r, bj * 3 + c) = M[r][c];
+                }
+            }
+        }
+    }
+    return out;
+}
 
 #endif
 

@@ -20,6 +20,7 @@ struct Tetrahedron {
     Vec4i verticesIndex; // index of the four vertices
     mat3<Real> Dm_inv; // inverse of the rest state matrix
     Real volume; // rest volume
+    StaticMatrix<Real, 12, 12> K; // stillness matrix
 };
 
 template <typename Real>

@@ -138,8 +138,7 @@ size_t ElasticitySolverT<Real>::GetVertexCount() const
 }
 
 
-// ������ Main simulation loop ����������������������������������������������������������������������������������������������������
-
+//  Main simulation loop
 template <typename Real>
 void ElasticitySolverT<Real>::Simulate(unsigned int total_frame, bool export_results)
 {

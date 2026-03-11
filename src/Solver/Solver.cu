@@ -158,8 +158,115 @@ __device__ mat3<Real> P_NeoHookean(const mat3<Real>& F, Real mu, Real lambda)
     return P;
 }
 
+// The return results is vectorized.
+template <typename Real>
+__host__ __device__
+Mat9x12<Real> BuildBMatrixFromdFdx(const mat3<Real> dF_dx[12])
+{
+    Mat9x12<Real> B(Real(0));
+
+    for (int a = 0; a < 12; ++a)
+    {
+        const mat3<Real>& M = dF_dx[a];
+
+        B(0, a) = M(0, 0);
+        B(1, a) = M(1, 0);
+        B(2, a) = M(2, 0);
+        B(3, a) = M(0, 1);
+        B(4, a) = M(1, 1);
+        B(5, a) = M(2, 1);
+        B(6, a) = M(0, 2);
+        B(7, a) = M(1, 2);
+        B(8, a) = M(2, 2);
+    }
+
+    return B;
+}
+
+template <typename Real>
+__host__ __device__
+Mat9x9<Real> BuildMatrixGFromdJdF(const mat3<Real> dJdF)
+{
+    Mat9x9<Real> G(Real(0));
+    Real g[9];
+
+    g[0] = dJdF(0,0);
+    g[1] = dJdF(1,0);
+    g[2] = dJdF(2,0);
+    g[3] = dJdF(0,1);
+    g[4] = dJdF(1,1);
+    g[5] = dJdF(2,1);
+    g[6] = dJdF(0,2);
+    g[7] = dJdF(1,2);
+    g[8] = dJdF(2,2);
+
+    #pragma unroll
+    for (int r = 0; r < 9; ++r) {
+        #pragma unroll
+        for (int c = 0; c < 9; ++c) {
+            G(r, c) = g[r] * g[c];
+        }
+    }
+
+    return G;
+}
+
+template <typename Real>
+__host__ __device__
+Mat9x9<Real> BuildHessianMatrix(const mat3<Real>& F)
+{
+    BlockMat3<Real, 3, 3> H;
+    Vector<Real, 3> f0 = F.column(0);
+    Vector<Real, 3> f1 = F.column(1);
+    Vector<Real, 3> f2 = F.column(2);
+
+    mat3<Real> f0hat = crossProductMatrix(f0);
+    mat3<Real> f1hat = crossProductMatrix(f1);
+    mat3<Real> f2hat = crossProductMatrix(f2);
+    mat3<Real> zeroMat(Real(0));
+
+    H(0, 0) = zeroMat;
+    H(0, 1) = -f2hat;
+    H(0, 2) = f1hat;
+    H(1, 0) = f2hat;
+    H(1, 1) = zeroMat;
+    H(1, 2) = -f0hat;
+    H(2, 0) = -f1hat;
+    H(2, 1) = f0hat;
+    H(2, 2) = zeroMat;
+
+    return FlattenBlockMat3(H);
+}
+
+template <typename Real>
+__host__ __device__
+Mat9x9<Real> BuildHessianMatrix(
+    const Vector<Real, 3>& f0, 
+    const Vector<Real, 3>& f1, 
+    const Vector<Real, 3>& f2)
+{
+    BlockMat3<Real, 3, 3> H;
+
+    mat3<Real> f0hat = crossProductMatrix(f0);
+    mat3<Real> f1hat = crossProductMatrix(f1);
+    mat3<Real> f2hat = crossProductMatrix(f2);
+    mat3<Real> zeroMat(Real(0));
+
+    H(0, 0) = zeroMat;
+    H(0, 1) = -f2hat;
+    H(0, 2) = f1hat;
+    H(1, 0) = f2hat;
+    H(1, 1) = zeroMat;
+    H(1, 2) = -f0hat;
+    H(2, 0) = -f1hat;
+    H(2, 1) = f0hat;
+    H(2, 2) = zeroMat;
+
+    return FlattenBlockMat3(H);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Kernel 1 �?compute elastic forces and mass from tetrahedra
+// Kernel 1   compute elastic forces and mass from tetrahedra
 //            Uses atomic adds to scatter forces/masses to vertices
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -237,7 +344,7 @@ __global__ void k_ComputeForces(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Kernel 2 �?symplectic Euler integration + gravity + damping
+// Kernel 2 symplectic Euler integration + gravity + damping
 // ─────────────────────────────────────────────────────────────────────────────
 
 template <typename Real>
@@ -279,7 +386,7 @@ __global__ void k_Integrate(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Kernel 3 �?AABB boundary collision (simple position projection + restitution)
+// Kernel 3 AABB boundary collision (simple position projection + restitution)
 // ─────────────────────────────────────────────────────────────────────────────
 
 template <typename Real>
@@ -321,7 +428,6 @@ __global__ void k_BoundaryCheck(
 // ─────────────────────────────────────────────────────────────────────────────
 // Kernel 4 initialise Dm_inv and rest volume for each tetrahedron
 // ─────────────────────────────────────────────────────────────────────────────
-
 template <typename Real>
 __global__ void k_ComputeTetInitVolume(
     Tetrahedron<Real>* tets,
@@ -372,13 +478,11 @@ __global__ void k_ComputeTetInitVolume(
 template <typename Real>
 __global__ void K_ComputeK(
     const Tetrahedron<Real>* __restrict__ tets,
-    const Vector<Real, 3>* __restrict__ vertex,
-    const Vector<Real, 3>* __restrict__ velocity,
-    const Vector<Real, 3>* __restrict__ force,
-    const mat3<Real>* __restrict__ d_F,
-    const Real* __restrict__ mass,
-    const Real* __restrict__ K, // global stiffness matrix in COO format (preallocated)
-    int numTets, int numVerts)
+    const mat3<Real>*      __restrict__ d_F,
+    const Real*            __restrict__ mass,
+    Mat12x12<Real>*        __restrict__ K,
+    int numTets
+)
 {
     using Vec3 = Vector<Real, 3>;
     using Mat3 = mat3<Real>;
@@ -387,19 +491,22 @@ __global__ void K_ComputeK(
 
     const Tetrahedron<Real>& tet = tets[tid]; 
     const Vec4i ids = tet.verticesIndex;
+    Real volume = tet.volume;
+
+    const DevParams<Real>& params = GetDevParams<Real>();
+    Real mu = params.mu;
+    Real lambda = params.lambda;
 
     Mat3 F = d_F[tid];
+    Real J = Mat3::determinant(F);
+    // Clamp J to avoid singularity
+    J = (J > static_cast<Real>(1e-4)) ? J : static_cast<Real>(1e-4);
 
-    /**
-     * 
-     * Compute dF / dx = (dD_s / dx) * (Dm_Inv)
-     * 
-    */
+    //Compute dF / dx = (dD_s / dx) * (Dm_Inv)
     Mat3 dF_dx[12];
     Mat3 Dm_inv = tet.Dm_inv;
     Mat3 Dm_invT = Mat3::transpose(Dm_inv);
     Vec3 g[4]; // gradients of shape functions
-
     // g0, g1, g2 from Dm_inv^T columns
     // g3 = -g0 - g1 - g2
     g[1] = Dm_invT.column(0);
@@ -417,6 +524,7 @@ __global__ void K_ComputeK(
             dF_dx[a * 3 + c] = dF;
         }
     }
+    Mat9x12<Real> B = BuildBMatrixFromdFdx(dF_dx);
 
     /**
      * 
@@ -430,8 +538,29 @@ __global__ void K_ComputeK(
      *                                   crossproduct(-f1)   crossproduct(f0)           0          ]
      * Here f0, f1, f2 are the columes of deformation gradient matrix F.
     */
-   Mat3 dJ_dF((cross(F.column(1), F.column(2)), cross(F.column(2), F.column(0)), cross(F.column(0), F.column(1))));
-//    Real* Vec_dJdF;
+    // material Hessian
+    Vec3 f0 = F.column(0);
+    Vec3 f1 = F.column(1);
+    Vec3 f2 = F.column(2);
+
+    Mat3 dJ_dF(
+        cross(f1, f2),
+        cross(f2, f0),
+        cross(f0, f1)
+    );
+
+    Mat9x9<Real> G        = BuildMatrixGFromdJdF(dJ_dF);
+    Mat9x9<Real> hessianJ = BuildHessianMatrix(f0, f1, f2);
+    Mat9x9<Real> I9       = Mat9x9<Real>::Identity();
+
+    Mat9x9<Real> dP_dF =
+          mu * I9
+        + lambda * G
+        + (lambda * (J - Real(1)) - mu) * hessianJ;
+
+    Mat12x12<Real> Ke = volume * (transpose(B) * dP_dF * B);
+
+   K[tid] = volume * (transpose(B) * dP_dF * B);
 }
 
 template <typename Real>

@@ -617,7 +617,7 @@ operator*(const StaticMatrix<Real, M, K>& A,
           const StaticMatrix<Real, K, N>& B)
 {
     StaticMatrix<Real, M, N> C;
-    C.setZero();
+    //C.setZero();
 
     CUDA_UNROLL
     for (int i = 0; i < M; ++i)
@@ -708,13 +708,17 @@ FlattenBlockMat3(const BlockMat3<Real, BR, BC>& A)
 {
     StaticMatrix<Real, BR * 3, BC * 3> out(Real(0));
 
+	CUDA_UNROLL
     for (int bi = 0; bi < BR; ++bi)
     {
+		CUDA_UNROLL
         for (int bj = 0; bj < BC; ++bj)
         {
             const mat3<Real>& M = A(bi, bj);
+			CUDA_UNROLL
             for (int r = 0; r < 3; ++r)
             {
+				CUDA_UNROLL
                 for (int c = 0; c < 3; ++c)
                 {
                     out(bi * 3 + r, bj * 3 + c) = M[r][c];

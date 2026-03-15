@@ -3,6 +3,10 @@
 #include "MeshToTet.hpp"
 #include "ProjectPaths.h"
 #include <cuda_runtime_api.h>
+#include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
+#include <cublas_v2.h>
 
 #define CUDA_CHECK(call) \
     do { \
@@ -12,6 +16,15 @@
                       << cudaGetErrorString(err) << std::endl; \
             exit(EXIT_FAILURE); \
         } \
+    } while (0)
+
+#define CUBLAS_CHECK(err)                                                                          \
+    do {                                                                                           \
+        cublasStatus_t err_ = (err);                                                               \
+        if (err_ != CUBLAS_STATUS_SUCCESS) {                                                       \
+            std::printf("cublas error %d at %s:%d\n", err_, __FILE__, __LINE__);                   \
+            throw std::runtime_error("cublas error");                                              \
+        }                                                                                          \
     } while (0)
 
 template <typename Real>
@@ -27,6 +40,12 @@ bool ElasticitySolverT<Real>::DataTransfer(const std::vector<Tetrahedron<Real>>&
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_vertex), vertices.size() * sizeof(Vec3)));
     CUDA_CHECK(cudaMemcpy(d_vertex, vertices.data(), vertices.size() * sizeof(Vec3), cudaMemcpyHostToDevice));
 
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&delta_x), vertices.size() * sizeof(Vec3)));
+    CUDA_CHECK(cudaMemset(delta_x, 0, sizeof(Vec3) * vertices.size()));
+
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&B), vertices.size() * sizeof(Vec3)));
+    CUDA_CHECK(cudaMemset(delta_x, 0, sizeof(Vec3) * vertices.size()));
+
 	// velocity initialization
 	CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_vertex_velocity), vertices.size() * sizeof(Vec3)));
 	// Initialize velocities to zero
@@ -41,7 +60,6 @@ bool ElasticitySolverT<Real>::DataTransfer(const std::vector<Tetrahedron<Real>>&
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_mass), vertices.size() * sizeof(Real)));
     // Initialize masses to zero (this would typically be computed based on density and volume)
     CUDA_CHECK(cudaMemset(d_mass, 0, vertices.size() * sizeof(Real)));
-
     
     return true;
 }
@@ -65,8 +83,12 @@ void ElasticitySolverT<Real>::Initialize(const Mesh<Real>& mesh)
 
     extractSurfaceTriangles(h_tet, tet_vertices_f, suraceMesh);
     DataTransfer(h_tet, h_vertex);
+    csr_ready = false;
     params_ready = false;
     info_printed = false;
+
+    // Create cublas handle
+    CUBLAS_CHECK(cublasCreate(&cublasH));
 }
 
 
@@ -111,12 +133,25 @@ template <typename Real>
 ElasticitySolverT<Real>::~ElasticitySolverT()
 {
     // Free GPU memory
-    cudaFree(d_tet);
-    cudaFree(d_vertex);
-    cudaFree(d_vertex_velocity);
-    cudaFree(d_mass);
-    cudaFree(d_force);
-    cudaFree(d_F);
+    CUDA_CHECK(cudaFree(d_tet));
+    CUDA_CHECK(cudaFree(d_vertex));
+    CUDA_CHECK(cudaFree(d_vertex_velocity));
+    CUDA_CHECK(cudaFree(d_mass));
+    CUDA_CHECK(cudaFree(d_force));
+    CUDA_CHECK(cudaFree(d_F));
+
+    // CSR matrix
+    CUDA_CHECK(cudaFree(d_A_row_offsets));
+    CUDA_CHECK(cudaFree(d_A_col_indices));
+    CUDA_CHECK(cudaFree(d_A_values));
+    CUDA_CHECK(cudaFree(d_elem_to_A_csr));
+
+    // CG solver
+    CUDA_CHECK(cudaFree(delta_x));
+    CUDA_CHECK(cudaFree(B));
+
+    // cublas handle
+    CUBLAS_CHECK(cublasDestroy(cublasH));
 }
 
 template <typename Real>
@@ -156,6 +191,12 @@ void ElasticitySolverT<Real>::Simulate(unsigned int total_frame, bool export_res
 
     std::cout << "Precomputing volume and mass...." << std::endl;
     ComputeTetInitVolume();
+    if (h_params.solverType == IMPLICIT && !csr_ready) {
+        std::cout << "Precomputing global CSR matrix topology..." << std::endl;
+        BuildGlobalCsrFromTetMesh();
+        UploadGlobalCsrToDevice();
+        csr_ready = true;
+    }
 
     for (unsigned int frame = 0; frame < total_frame; ++frame) {
         for (unsigned int sub = 0; sub < h_params.substeps; ++sub) {
@@ -180,6 +221,11 @@ void ElasticitySolverT<Real>::SimulateFrame(bool export_result)
         SetParams();
         // precompute volumes and mass.
         ComputeTetInitVolume();
+        if (h_params.solverType == IMPLICIT && !csr_ready) {
+            BuildGlobalCsrFromTetMesh();
+            UploadGlobalCsrToDevice();
+            csr_ready = true;
+        }
         params_ready = true;
     }
     if (!info_printed) {
@@ -198,6 +244,117 @@ void ElasticitySolverT<Real>::SimulateFrame(bool export_result)
     }
 }
 
+template <typename Real>
+void ElasticitySolverT<Real>::BuildGlobalCsrFromTetMesh()
+{
+    const int numVerts = static_cast<int>(h_vertex.size());
+    const int numTets = static_cast<int>(h_tet.size());
+    const int dofCount = numVerts * 3;
+
+    h_A_row_offsets.assign(dofCount + 1, 0);
+    h_A_col_indices.clear();
+    h_A_values.clear();
+    h_elem_to_A_csr.assign(static_cast<size_t>(numTets) * 12 * 12, -1);
+
+    std::vector<std::unordered_set<int>> rowConnectivity(static_cast<size_t>(dofCount));
+
+    for (const auto& tet : h_tet) {
+        const int v[4] = {
+            tet.verticesIndex[0], tet.verticesIndex[1],
+            tet.verticesIndex[2], tet.verticesIndex[3]
+        };
+        for (int a = 0; a < 4; ++a) {
+            for (int da = 0; da < 3; ++da) {
+                const int row = v[a] * 3 + da;
+                auto& cols = rowConnectivity[static_cast<size_t>(row)];
+                for (int b = 0; b < 4; ++b) {
+                    for (int db = 0; db < 3; ++db) {
+                        cols.insert(v[b] * 3 + db);
+                    }
+                }
+            }
+        }
+    }
+
+    std::vector<std::unordered_map<int, int>> rowLookup(static_cast<size_t>(dofCount));
+    int nnz = 0;
+    for (int row = 0; row < dofCount; ++row) {
+        h_A_row_offsets[static_cast<size_t>(row)] = nnz;
+        auto cols = std::vector<int>(
+            rowConnectivity[static_cast<size_t>(row)].begin(),
+            rowConnectivity[static_cast<size_t>(row)].end());
+        std::sort(cols.begin(), cols.end());
+        for (const int col : cols) {
+            h_A_col_indices.push_back(col);
+            rowLookup[static_cast<size_t>(row)].insert({ col, nnz });
+            ++nnz;
+        }
+    }
+    h_A_row_offsets[static_cast<size_t>(dofCount)] = nnz;
+    h_A_values.assign(static_cast<size_t>(nnz), static_cast<Real>(0));
+
+    for (int e = 0; e < numTets; ++e) {
+        const auto& tet = h_tet[static_cast<size_t>(e)];
+        const int v[4] = {
+            tet.verticesIndex[0], tet.verticesIndex[1],
+            tet.verticesIndex[2], tet.verticesIndex[3]
+        };
+        for (int lr = 0; lr < 12; ++lr) {
+            const int ra = lr / 3;
+            const int rd = lr % 3;
+            const int globalRow = v[ra] * 3 + rd;
+            const auto& lookup = rowLookup[static_cast<size_t>(globalRow)];
+            for (int lc = 0; lc < 12; ++lc) {
+                const int ca = lc / 3;
+                const int cd = lc % 3;
+                const int globalCol = v[ca] * 3 + cd;
+                const auto it = lookup.find(globalCol);
+                if (it == lookup.end()) {
+                    std::cerr << "CSR mapping error at element " << e
+                              << ", local (" << lr << "," << lc << ")." << std::endl;
+                    exit(EXIT_FAILURE);
+                }
+                const size_t mapIdx = static_cast<size_t>(e) * 12 * 12 + static_cast<size_t>(lr) * 12 + static_cast<size_t>(lc);
+                h_elem_to_A_csr[mapIdx] = it->second;
+            }
+        }
+    }
+
+    std::cout << "CSR ready: dof=" << dofCount
+              << ", nnz=" << nnz
+              << ", element-map entries=" << h_elem_to_A_csr.size()
+              << std::endl;
+}
+
+template <typename Real>
+void ElasticitySolverT<Real>::UploadGlobalCsrToDevice()
+{
+    cudaFree(d_A_row_offsets);
+    cudaFree(d_A_col_indices);
+    cudaFree(d_A_values);
+    cudaFree(d_elem_to_A_csr);
+    d_A_row_offsets = nullptr;
+    d_A_col_indices = nullptr;
+    d_A_values = nullptr;
+    d_elem_to_A_csr = nullptr;
+
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_A_row_offsets), h_A_row_offsets.size() * sizeof(int)));
+    CUDA_CHECK(cudaMemcpy(d_A_row_offsets, h_A_row_offsets.data(),
+        h_A_row_offsets.size() * sizeof(int), cudaMemcpyHostToDevice));
+
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_A_col_indices), h_A_col_indices.size() * sizeof(int)));
+    CUDA_CHECK(cudaMemcpy(d_A_col_indices, h_A_col_indices.data(),
+        h_A_col_indices.size() * sizeof(int), cudaMemcpyHostToDevice));
+
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_A_values), h_A_values.size() * sizeof(Real)));
+    CUDA_CHECK(cudaMemcpy(d_A_values, h_A_values.data(),
+        h_A_values.size() * sizeof(Real), cudaMemcpyHostToDevice));
+
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_elem_to_A_csr), h_elem_to_A_csr.size() * sizeof(int)));
+    CUDA_CHECK(cudaMemcpy(d_elem_to_A_csr, h_elem_to_A_csr.data(),
+        h_elem_to_A_csr.size() * sizeof(int), cudaMemcpyHostToDevice));
+}
+
 template bool ElasticitySolverT<float>::DataTransfer(const std::vector<Tetrahedron<float>>&, const std::vector<Vec3f>&);
 template bool ElasticitySolverT<double>::DataTransfer(const std::vector<Tetrahedron<double>>&, const std::vector<Vec3d>&);
 
@@ -209,6 +366,12 @@ template void ElasticitySolverT<double>::Simulate(unsigned int, bool);
 
 template void ElasticitySolverT<float>::SimulateFrame(bool);
 template void ElasticitySolverT<double>::SimulateFrame(bool);
+
+template void ElasticitySolverT<float>::BuildGlobalCsrFromTetMesh();
+template void ElasticitySolverT<double>::BuildGlobalCsrFromTetMesh();
+
+template void ElasticitySolverT<float>::UploadGlobalCsrToDevice();
+template void ElasticitySolverT<double>::UploadGlobalCsrToDevice();
 
 template void ElasticitySolverT<float>::ExportMesh(unsigned int);
 template void ElasticitySolverT<double>::ExportMesh(unsigned int);

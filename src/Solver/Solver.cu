@@ -17,6 +17,7 @@
 #include "math/decomposition.hpp"
 #include "iostream"
 #include <cuda_runtime.h>
+#include <cublas_v2.h>
 
  // ─────────────────────────────────────────────────────────────────────────────
  // Helpers
@@ -479,8 +480,6 @@ template <typename Real>
 __global__ void K_ComputeK(
     const Tetrahedron<Real>* __restrict__ tets,
     const mat3<Real>*      __restrict__ d_F,
-    const Real*            __restrict__ mass,
-    Mat12x12<Real>*        __restrict__ K,
     int numTets
 )
 {
@@ -560,7 +559,7 @@ __global__ void K_ComputeK(
 
     Mat12x12<Real> Ke = volume * (transpose(B) * dP_dF * B);
 
-   K[tid] = volume * (transpose(B) * dP_dF * B);
+   //K[tid] = volume * (transpose(B) * dP_dF * B);
 }
 
 template <typename Real>
@@ -679,10 +678,19 @@ void ElasticitySolverT<Real>::Step_Implicit()
         d_tet, d_vertex, d_force, d_F, numTets);
     CUDA_CHECK(cudaGetLastError());
 
+    // Compute stiffness matrix
+    //K_ComputeK<Real> << <grid1D(numTets), 256 >> > (d_tet, d_F, K, numTets);
+
+    // Assembel Linear system.
+
+    // CG solver.
+
+    // Implicit integrate.
     k_integrateImplicit<Real><<<grid1D(numVerts), 256>>>(
-        d_vertex, d_vertex_velocity, d_vertex, numVerts);
+        d_vertex, d_vertex_velocity, delta_x, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
+    //Boundary check.
     k_BoundaryCheck<Real><<<grid1D(numVerts), 256>>>(
         d_vertex, d_vertex_velocity, numVerts);
     CUDA_CHECK(cudaGetLastError());

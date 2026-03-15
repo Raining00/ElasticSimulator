@@ -89,16 +89,19 @@ private:
     mat3<Real>* d_F;
     int* d_A_row_offsets = nullptr;
     int* d_A_col_indices = nullptr;
+    int* d_A_diag_indices = nullptr;
     Real* d_A_values = nullptr;
     int* d_elem_to_A_csr = nullptr;
 
     // for implicit solver. A x = B
-    Vec3* delta_x;
-    Vec3* B;
+    Real* delta_x;
+    Real* b;
+    Real* r;
     cublasHandle_t cublasH;
 
     std::vector<int> h_A_row_offsets;
     std::vector<int> h_A_col_indices;
+    std::vector<int> h_A_diag_indices;
     std::vector<Real> h_A_values;
     std::vector<int> h_elem_to_A_csr;
 

@@ -43,8 +43,11 @@ bool ElasticitySolverT<Real>::DataTransfer(const std::vector<Tetrahedron<Real>>&
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&delta_x), vertices.size() * sizeof(Vec3)));
     CUDA_CHECK(cudaMemset(delta_x, 0, sizeof(Vec3) * vertices.size()));
 
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&B), vertices.size() * sizeof(Vec3)));
-    CUDA_CHECK(cudaMemset(delta_x, 0, sizeof(Vec3) * vertices.size()));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&b), vertices.size() * sizeof(Vec3)));
+    CUDA_CHECK(cudaMemset(b, 0, sizeof(Vec3) * vertices.size()));
+
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&r), vertices.size() * sizeof(Vec3)));
+    CUDA_CHECK(cudaMemset(r, 0, sizeof(Vec3) * vertices.size()));
 
 	// velocity initialization
 	CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_vertex_velocity), vertices.size() * sizeof(Vec3)));
@@ -148,7 +151,8 @@ ElasticitySolverT<Real>::~ElasticitySolverT()
 
     // CG solver
     CUDA_CHECK(cudaFree(delta_x));
-    CUDA_CHECK(cudaFree(B));
+    CUDA_CHECK(cudaFree(b));
+    CUDA_CHECK(cudaFree(r));
 
     // cublas handle
     CUBLAS_CHECK(cublasDestroy(cublasH));
@@ -257,6 +261,9 @@ void ElasticitySolverT<Real>::BuildGlobalCsrFromTetMesh()
     h_elem_to_A_csr.assign(static_cast<size_t>(numTets) * 12 * 12, -1);
 
     std::vector<std::unordered_set<int>> rowConnectivity(static_cast<size_t>(dofCount));
+    for (int row = 0; row < dofCount; ++row) {
+        rowConnectivity[static_cast<size_t>(row)].insert(row);
+    }
 
     for (const auto& tet : h_tet) {
         const int v[4] = {

@@ -721,7 +721,7 @@ FlattenBlockMat3(const BlockMat3<Real, BR, BC>& A)
 				CUDA_UNROLL
                 for (int c = 0; c < 3; ++c)
                 {
-                    out(bi * 3 + r, bj * 3 + c) = M[r][c];
+                    out(bi * 3 + r, bj * 3 + c) = M(r, c);
                 }
             }
         }

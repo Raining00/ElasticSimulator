@@ -254,17 +254,32 @@ Mat9x9<Real> BuildHessianMatrix(
     mat3<Real> zeroMat(Real(0));
 
     H(0, 0) = zeroMat;
-    H(0, 1) = -f2hat;
+    H(0, 1) = Real(-1) * f2hat;
     H(0, 2) = f1hat;
     H(1, 0) = f2hat;
     H(1, 1) = zeroMat;
-    H(1, 2) = -f0hat;
-    H(2, 0) = -f1hat;
+    H(1, 2) = Real(-1) * f0hat;
+    H(2, 0) = Real(-1) *  f1hat;
     H(2, 1) = f0hat;
     H(2, 2) = zeroMat;
 
     return FlattenBlockMat3(H);
 }
+
+template <typename Real>
+__global__ void k_AddGravity(
+    Vector<Real, 3>* __restrict__ force,
+    Real* __restrict__ mass,
+    int numVerts
+)
+{
+    int vid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (vid >= numVerts)
+        return;
+    const DevParams<Real>& params = GetDevParams<Real>();
+    force[vid] += mass[vid] * params.gravity;
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Kernel 1   compute elastic forces and mass from tetrahedra
@@ -366,11 +381,9 @@ __global__ void k_Integrate(
     const DevParams<Real>& params = GetDevParams<Real>();
     Real dt = params.dt;
     Real damping = params.damping;
-    Vec3 g = params.gravity;
 
     // Add gravity
     Vec3 f = force[vid];
-    f += m * g;
 
     // Acceleration
     Vec3 a = f / m;
@@ -473,13 +486,24 @@ __global__ void k_ComputeTetInitVolume(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Kernel 5 Compute stiffness matrix for each tetrahedron
+// Kernel 5 Compute stiffness matrix for each tetrahedron. Then scatter the stiffness matrix to the global matrix.
+// 
+// stiffness matrix:
 // df / dx = vec(dF / dx)^T * vec(dp / dF) * vec(dF / dx)
+// 
+// Linear system:  (I - M^(-1) * (df/dx)*dt^2) \delta x = v_n * dt + M^(-1) * f * dt^2
+// Ax = b
+// A = (I - M^(-1) * (df/dx)*dt^2)
+// b = v_n * dt + M^(-1) * f * dt^2
 // ─────────────────────────────────────────────────────────────────────────────
 template <typename Real>
-__global__ void K_ComputeK(
+__global__ void k_computeK(
     const Tetrahedron<Real>* __restrict__ tets,
-    const mat3<Real>*      __restrict__ d_F,
+    const mat3<Real>*      __restrict__ d_F,  // deformation gradient
+    const int* __restrict__ elem_to_A_csr,
+    Real* __restrict__ A_values,
+    const Real* __restrict__ mass,
+    int nnz,
     int numTets
 )
 {
@@ -489,12 +513,13 @@ __global__ void K_ComputeK(
     if (tid >= numTets) return;
 
     const Tetrahedron<Real>& tet = tets[tid]; 
-    const Vec4i ids = tet.verticesIndex;
+    //const Vec4i ids = tet.verticesIndex;
     Real volume = tet.volume;
 
     const DevParams<Real>& params = GetDevParams<Real>();
     Real mu = params.mu;
     Real lambda = params.lambda;
+    Real dt = params.dt;
 
     Mat3 F = d_F[tid];
     Real J = Mat3::determinant(F);
@@ -557,34 +582,72 @@ __global__ void K_ComputeK(
         + lambda * G
         + (lambda * (J - Real(1)) - mu) * hessianJ;
 
-    Mat12x12<Real> Ke = volume * (transpose(B) * dP_dF * B);
+    Mat12x12<Real> Ke = -volume * (transpose(B) * dP_dF * B);
 
-   //K[tid] = volume * (transpose(B) * dP_dF * B);
+    const Real dt2 = dt * dt;
+    // Scatter Ke to the global CSR Matrix.
+    const int* mapBase = elem_to_A_csr + tid * 12 * 12;
+    #pragma unroll
+    for (int lr = 0; lr < 12; ++lr) {
+        #pragma unroll
+        for (int lc = 0; lc < 12; ++lc) {
+            const int csrIdx = mapBase[lr * 12 + lc];
+            atomicAdd(&A_values[csrIdx], Ke(lr, lc) * dt2);
+        }
+    }
+}
+
+template <typename Real>
+__global__ void k_Assemble(
+    const int* __restrict__ d_A_diag_indices,
+    Real* __restrict__ d_A_values,
+    Real* __restrict__ b,
+    Vector<Real, 3>* __restrict__ vn,
+    Vector<Real, 3>* __restrict__ force,
+    const Real* __restrict__ mass,
+    int numVerts
+)
+{
+    int vid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (vid >= numVerts) return;
+
+    const DevParams<Real>& params = GetDevParams<Real>();
+    const Real dt = params.dt;
+    const Real dt2 = dt * dt;
+    const Real m = mass[vid];
+    const Real invM = (m > static_cast<Real>(1e-12))
+        ? (static_cast<Real>(1) / m)
+        : static_cast<Real>(0);
+
+    const int base = vid * 3;
+    #pragma unroll
+    for (int c = 0; c < 3; ++c) {
+        const int diagIdx = d_A_diag_indices[base + c];
+        d_A_values[diagIdx] += m;
+        b[vid * 3 + c] = vn[vid][c] * dt + force[vid][c] * (invM * dt2);
+    }
 }
 
 template <typename Real>
 __global__ void k_integrateImplicit(
     Vector<Real, 3>* __restrict__ vertex,
     Vector<Real, 3>* __restrict__ velocity,
-    Vector<Real, 3>* __restrict__ delta_x,
+    Real* __restrict__ delta_x,
     int numVerts)
 {
-    // Placeholder for implicit solver integration step
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= numVerts)
+    using Vec3 = Vector<Real, 3>;
+    int vid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (vid >= numVerts)
         return;
     
-    Vector<Real, 3> dx = delta_x[idx];
-    vertex[idx] += dx;
-    velocity[idx] = dx / GetDevParams<Real>().dt; // Update velocity based on position change
-
-    return;
+    Vec3 dx = Vec3{ delta_x[vid * 3], delta_x[vid * 3 + 1], delta_x[vid * 3 + 2] };
+    vertex[vid] += dx;
+    velocity[vid] = dx / GetDevParams<Real>().dt; // Update velocity based on position change
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ElasticitySolver member implementations
 // ─────────────────────────────────────────────────────────────────────────────
-
 template <typename Real>
 void ElasticitySolverT<Real>::SetParams()
 {
@@ -650,6 +713,9 @@ void ElasticitySolverT<Real>::Step_Explicit()
     int numTets = static_cast<int>(h_tet.size());
     int numVerts = static_cast<int>(h_vertex.size());
 
+    k_AddGravity<<<grid1D(numVerts), 256>>>(d_force, d_mass, numVerts);
+    CUDA_CHECK(cudaGetLastError());
+
     k_ComputeForces<Real><<<grid1D(numTets), 256>>>(
         d_tet, d_vertex, d_force, d_F, numTets);
     CUDA_CHECK(cudaGetLastError());
@@ -678,10 +744,15 @@ void ElasticitySolverT<Real>::Step_Implicit()
         d_tet, d_vertex, d_force, d_F, numTets);
     CUDA_CHECK(cudaGetLastError());
 
-    // Compute stiffness matrix
-    //K_ComputeK<Real> << <grid1D(numTets), 256 >> > (d_tet, d_F, K, numTets);
+    // Assemble linear system
+    k_computeK<Real><< <grid1D(numTets), 256 >> >(
+        d_tet, d_F, d_elem_to_A_csr, d_A_values, d_mass, h_A_values.size(), numTets);
+    CUDA_CHECK(cudaGetLastError());
 
-    // Assembel Linear system.
+    // TODO: 
+    k_Assemble<Real><<<grid1D(numVerts), 256>>>(
+        d_A_diag_indices, d_A_values, this->b, d_vertex_velocity, d_force, d_mass, numVerts);
+    CUDA_CHECK(cudaGetLastError());
 
     // CG solver.
 
@@ -694,6 +765,12 @@ void ElasticitySolverT<Real>::Step_Implicit()
     k_BoundaryCheck<Real><<<grid1D(numVerts), 256>>>(
         d_vertex, d_vertex_velocity, numVerts);
     CUDA_CHECK(cudaGetLastError());
+
+    CUDA_CHECK(cudaMemset(d_A_values, 0, sizeof(Real) * h_A_values.size()));
+    CUDA_CHECK(cudaMemset(this->b, 0, sizeof(Real) * 3 * numVerts));
+    CUDA_CHECK(cudaMemset(delta_x, 0, sizeof(Real) * 3 * numVerts));
+    CUDA_CHECK(cudaMemset(d_force, 0, sizeof(Vec3) * numVerts));
+
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 

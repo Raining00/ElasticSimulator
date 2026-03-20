@@ -26,6 +26,16 @@ using Scalar = double;
     }                                                                          \
 }
 
+#define CHECK_CUBLAS(func)                                                     \
+{                                                                              \
+    cublasStatus_t status = (func);                                            \
+    if (status != CUBLAS_STATUS_SUCCESS) {                                     \
+        printf("CUBLAS API failed at line %d with error: %d\n",                \
+               __LINE__, status);                                              \
+        return EXIT_FAILURE;                                                   \
+    }                                                                          \
+}
+
 void print_matrix(const std::vector<Scalar>& mat, const int row, const int col)
 {
     for(int i = 0; i < row; i ++)
@@ -58,7 +68,7 @@ int main()
     std::vector<Scalar> lower_diag = { 1, 1, 1, 1, 1, 1, 1, 1 };
     std::vector<Scalar> upper_diag = { 2, 2, 2, 2, 2, 2, 2, 2 };
 
-    std::vector<Scalar> h_b = { 7, 9, 10, 11, 12, 10, 9, 6};
+    std::vector<Scalar> h_b = { 7, 9, 10, 11, 12, 10, 9, 6, 0 };
     Scalar* d_b;
     cudaMalloc((void**)&d_b, sizeof(Scalar) * h_b.size());
     cudaMemcpy(d_b, h_b.data(), sizeof(Scalar) * h_b.size(), cudaMemcpyHostToDevice);
@@ -164,12 +174,93 @@ int main()
 
 
     // CG Process
-    
+    {
+        constexpr Scalar tol = 1.0e-12;
+        const Scalar one = 1.0;
+        const Scalar zero = 0.0;
+        const int max_iters = num_rows;
+        Scalar* q = nullptr;
+        void* dBuffer_spmv = nullptr;
+        size_t bufferSize_spmv = 0;
+        cusparseDnVecDescr_t vecP;
+        cusparseDnVecDescr_t vecQ;
 
+        CHECK_CUDA(cudaMalloc((void**)&q, sizeof(Scalar) * num_rows));
+        CHECK_CUDA(cudaMemset(d_x, 0, sizeof(Scalar) * num_rows));
+        CHECK_CUBLAS(cublasDcopy(cublasH, num_rows, d_b, 1, r, 1));
+        CHECK_CUBLAS(cublasDcopy(cublasH, num_rows, r, 1, p, 1));
+
+        CHECK_CUSPARSE(cusparseCreateDnVec(&vecP, num_rows, p, CUDA_R_64F));
+        CHECK_CUSPARSE(cusparseCreateDnVec(&vecQ, num_rows, q, CUDA_R_64F));
+        CHECK_CUSPARSE(cusparseSpMV_bufferSize(
+            cusparseH, CUSPARSE_OPERATION_NON_TRANSPOSE,
+            &one, matA, vecP, &zero, vecQ, CUDA_R_64F,
+            CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize_spmv));
+        CHECK_CUDA(cudaMalloc(&dBuffer_spmv, bufferSize_spmv));
+
+        Scalar rr = 0.0;
+        CHECK_CUBLAS(cublasDdot(cublasH, num_rows, r, 1, r, 1, &rr));
+        for (int iter = 0; iter < max_iters && rr > tol * tol; ++iter)
+        {
+            CHECK_CUSPARSE(cusparseSpMV(
+                cusparseH, CUSPARSE_OPERATION_NON_TRANSPOSE,
+                &one, matA, vecP, &zero, vecQ, CUDA_R_64F,
+                CUSPARSE_SPMV_ALG_DEFAULT, dBuffer_spmv));
+
+            Scalar pAp = 0.0;
+            CHECK_CUBLAS(cublasDdot(cublasH, num_rows, p, 1, q, 1, &pAp));
+            if (pAp <= 0.0)
+            {
+                break;
+            }
+
+            const Scalar alpha = rr / pAp;
+            const Scalar neg_alpha = -alpha;
+            CHECK_CUBLAS(cublasDaxpy(cublasH, num_rows, &alpha, p, 1, d_x, 1));
+            CHECK_CUBLAS(cublasDaxpy(cublasH, num_rows, &neg_alpha, q, 1, r, 1));
+
+            Scalar rr_new = 0.0;
+            CHECK_CUBLAS(cublasDdot(cublasH, num_rows, r, 1, r, 1, &rr_new));
+            if (rr_new <= tol * tol)
+            {
+                rr = rr_new;
+                break;
+            }
+
+            const Scalar beta = rr_new / rr;
+            CHECK_CUBLAS(cublasDscal(cublasH, num_rows, &beta, p, 1));
+            CHECK_CUBLAS(cublasDaxpy(cublasH, num_rows, &one, r, 1, p, 1));
+            rr = rr_new;
+        }
+
+        std::vector<Scalar> h_x(num_rows, 0);
+        CHECK_CUDA(cudaMemcpy(h_x.data(), d_x, sizeof(Scalar) * num_rows,
+            cudaMemcpyDeviceToHost));
+        for (const Scalar value : h_x)
+        {
+            std::cout << value << ' ';
+        }
+        std::cout << std::endl;
+
+        CHECK_CUSPARSE(cusparseDestroyDnVec(vecP));
+        CHECK_CUSPARSE(cusparseDestroyDnVec(vecQ));
+        CHECK_CUDA(cudaFree(dBuffer_spmv));
+        CHECK_CUDA(cudaFree(q));
+    }
 
     CHECK_CUSPARSE(cusparseDestroyDnMat(matB));
     CHECK_CUSPARSE(cusparseDestroySpMat(matA));
     CHECK_CUSPARSE(cusparseDestroy(cusparseH));
     cublasDestroy(cublasH);
+    CHECK_CUDA(cudaFree(r));
+    CHECK_CUDA(cudaFree(d_b));
+    CHECK_CUDA(cudaFree(d_x));
+    CHECK_CUDA(cudaFree(d_csr_values));
+    CHECK_CUDA(cudaFree(d_csr_offsets));
+    CHECK_CUDA(cudaFree(d_csr_columns));
+    CHECK_CUDA(cudaFree(d_dense));
+    CHECK_CUDA(cudaFree(dBuffer));
+    CHECK_CUDA(cudaFree(dBuffer_sp2dn));
+    CHECK_CUDA(cudaFree(p));
     return 0;
 }

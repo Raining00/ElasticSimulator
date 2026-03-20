@@ -227,12 +227,12 @@ Mat9x9<Real> BuildHessianMatrix(const mat3<Real>& F)
     mat3<Real> zeroMat(Real(0));
 
     H(0, 0) = zeroMat;
-    H(0, 1) = -f2hat;
+    H(0, 1) = Real(-1) * f2hat;
     H(0, 2) = f1hat;
     H(1, 0) = f2hat;
     H(1, 1) = zeroMat;
-    H(1, 2) = -f0hat;
-    H(2, 0) = -f1hat;
+    H(1, 2) = Real(-1) * f0hat;
+    H(2, 0) = Real(-1) * f1hat;
     H(2, 1) = f0hat;
     H(2, 2) = zeroMat;
 

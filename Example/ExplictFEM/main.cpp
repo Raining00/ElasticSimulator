@@ -22,7 +22,7 @@ int main()
     solver.SetInitialOffset({ Scalar(0), Scalar(0.5), Scalar(0)});
     auto& p = solver.GetParameters();
     p.energyType = NEOHOOKEAN;
-    p.solverType = EXPLICIT;
+    p.solverType = IMPLICIT;
 	p.dt = 1e-4f;
 
     if (!viewer.Initialize(solver.GetSurfaceMesh(), 1280, 720)) {

@@ -44,6 +44,7 @@ target_link_libraries(ElasticBody
     PUBLIC
         CUDA::cudart
         CUDA::cublas
+        CUDA::cusparse
         tet
 )
 

@@ -18,6 +18,8 @@ enum SolverType
 
 //Froward declaration
 typedef struct cublasContext* cublasHandle_t;
+typedef struct cusparseContext* cusparseHandle_t;
+typedef struct cusparseSpMatDescr* cusparseSpMatDescr_t;
 
 template <typename Real>
 class ElasticitySolverT
@@ -66,6 +68,8 @@ protected:
     void ComputeTetInitVolume();
     void BuildGlobalCsrFromTetMesh();
     void UploadGlobalCsrToDevice();
+    void InitCUDALib();
+
     void SetParams();
     void Step();
     void Step_Explicit();
@@ -97,7 +101,9 @@ private:
     Real* delta_x;
     Real* b;
     Real* r;
+    cusparseSpMatDescr_t A;
     cublasHandle_t cublasH;
+    cusparseHandle_t cusparseH;
 
     std::vector<int> h_A_row_offsets;
     std::vector<int> h_A_col_indices;

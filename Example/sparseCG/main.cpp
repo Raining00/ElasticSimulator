@@ -1,10 +1,8 @@
-#include <cusparse.h>
-#include <cublas_v2.h>
-#include <cuda_runtime.h>
+#include "math/culib_helper.hpp"
 #include <iostream>
 #include <vector>
 
-using Scalar = double;
+using Scalar = float;
 
 #define CHECK_CUDA(func)                                                       \
 {                                                                              \
@@ -68,7 +66,7 @@ int main()
     std::vector<Scalar> lower_diag = { 1, 1, 1, 1, 1, 1, 1, 1 };
     std::vector<Scalar> upper_diag = { 2, 2, 2, 2, 2, 2, 2, 2 };
 
-    std::vector<Scalar> h_b = { 7, 9, 10, 11, 12, 10, 9, 6, 0 };
+    std::vector<Scalar> h_b = { 7, 9, 10, 11, 12, 11, 10, 9, 6 };
     Scalar* d_b;
     cudaMalloc((void**)&d_b, sizeof(Scalar) * h_b.size());
     cudaMemcpy(d_b, h_b.data(), sizeof(Scalar) * h_b.size(), cudaMemcpyHostToDevice);
@@ -115,11 +113,9 @@ int main()
     CHECK_CUDA(cudaMemcpy(d_dense, h_A.data(), dense_size * sizeof(Scalar),
         cudaMemcpyHostToDevice))
 
-    cusparseCreateDnMat(&matB, num_rows, num_cols, num_rows, d_dense, CUDA_R_64F, CUSPARSE_ORDER_ROW);
-    cusparseCreateCsr(&matA, num_rows, num_cols, 0,
-        d_csr_offsets, NULL, NULL,
-        CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F);
+    CusparseApi<Scalar>::CreateDnMat(&matB, num_rows, num_cols, num_rows, d_dense, CUSPARSE_ORDER_ROW);
+    CusparseApi<Scalar>::CreateCsr(&matA, num_rows, num_cols, 0,
+        d_csr_offsets, NULL, NULL);
 
     // allocate an external buffer if needed
     CHECK_CUSPARSE(cusparseDenseToSparse_bufferSize(
@@ -172,7 +168,6 @@ int main()
 
     print_matrix(h_dense, num_rows, num_cols);
 
-
     // CG Process
     {
         constexpr Scalar tol = 1.0e-12;
@@ -187,28 +182,28 @@ int main()
 
         CHECK_CUDA(cudaMalloc((void**)&q, sizeof(Scalar) * num_rows));
         CHECK_CUDA(cudaMemset(d_x, 0, sizeof(Scalar) * num_rows));
-        CHECK_CUBLAS(cublasDcopy(cublasH, num_rows, d_b, 1, r, 1));
-        CHECK_CUBLAS(cublasDcopy(cublasH, num_rows, r, 1, p, 1));
+        CHECK_CUBLAS(CublasApi<Scalar>::copy(cublasH, num_rows, d_b, 1, r, 1));
+        CHECK_CUBLAS(CublasApi<Scalar>::copy(cublasH, num_rows, r, 1, p, 1));
 
-        CHECK_CUSPARSE(cusparseCreateDnVec(&vecP, num_rows, p, CUDA_R_64F));
-        CHECK_CUSPARSE(cusparseCreateDnVec(&vecQ, num_rows, q, CUDA_R_64F));
-        CHECK_CUSPARSE(cusparseSpMV_bufferSize(
+        CHECK_CUSPARSE(CusparseApi<Scalar>::CreateDnVec(&vecP, num_rows, p));
+        CHECK_CUSPARSE(CusparseApi<Scalar>::CreateDnVec(&vecQ, num_rows, q));
+        CHECK_CUSPARSE(CusparseApi<Scalar>::SpMV_bufferSize(
             cusparseH, CUSPARSE_OPERATION_NON_TRANSPOSE,
-            &one, matA, vecP, &zero, vecQ, CUDA_R_64F,
+            &one, matA, vecP, &zero, vecQ,
             CUSPARSE_SPMV_ALG_DEFAULT, &bufferSize_spmv));
         CHECK_CUDA(cudaMalloc(&dBuffer_spmv, bufferSize_spmv));
 
         Scalar rr = 0.0;
-        CHECK_CUBLAS(cublasDdot(cublasH, num_rows, r, 1, r, 1, &rr));
+        CHECK_CUBLAS(CublasApi<Scalar>::dot(cublasH, num_rows, r, 1, r, 1, &rr));
         for (int iter = 0; iter < max_iters && rr > tol * tol; ++iter)
         {
-            CHECK_CUSPARSE(cusparseSpMV(
+            CHECK_CUSPARSE(CusparseApi<Scalar>::SpMV(
                 cusparseH, CUSPARSE_OPERATION_NON_TRANSPOSE,
-                &one, matA, vecP, &zero, vecQ, CUDA_R_64F,
+                &one, matA, vecP, &zero, vecQ,
                 CUSPARSE_SPMV_ALG_DEFAULT, dBuffer_spmv));
 
             Scalar pAp = 0.0;
-            CHECK_CUBLAS(cublasDdot(cublasH, num_rows, p, 1, q, 1, &pAp));
+            CHECK_CUBLAS(CublasApi<Scalar>::dot(cublasH, num_rows, p, 1, q, 1, &pAp));
             if (pAp <= 0.0)
             {
                 break;
@@ -216,11 +211,11 @@ int main()
 
             const Scalar alpha = rr / pAp;
             const Scalar neg_alpha = -alpha;
-            CHECK_CUBLAS(cublasDaxpy(cublasH, num_rows, &alpha, p, 1, d_x, 1));
-            CHECK_CUBLAS(cublasDaxpy(cublasH, num_rows, &neg_alpha, q, 1, r, 1));
+            CHECK_CUBLAS(CublasApi<Scalar>::axpy(cublasH, num_rows, &alpha, p, 1, d_x, 1));
+            CHECK_CUBLAS(CublasApi<Scalar>::axpy(cublasH, num_rows, &neg_alpha, q, 1, r, 1));
 
             Scalar rr_new = 0.0;
-            CHECK_CUBLAS(cublasDdot(cublasH, num_rows, r, 1, r, 1, &rr_new));
+            CHECK_CUBLAS(CublasApi<Scalar>::dot(cublasH, num_rows, r, 1, r, 1, &rr_new));
             if (rr_new <= tol * tol)
             {
                 rr = rr_new;
@@ -228,8 +223,8 @@ int main()
             }
 
             const Scalar beta = rr_new / rr;
-            CHECK_CUBLAS(cublasDscal(cublasH, num_rows, &beta, p, 1));
-            CHECK_CUBLAS(cublasDaxpy(cublasH, num_rows, &one, r, 1, p, 1));
+            CHECK_CUBLAS(CublasApi<Scalar>::scale(cublasH, num_rows, &beta, p, 1));
+            CHECK_CUBLAS(CublasApi<Scalar>::axpy(cublasH, num_rows, &one, r, 1, p, 1));
             rr = rr_new;
         }
 

@@ -12,17 +12,17 @@ int main()
     ElasticitySolverT<Scalar> solver;
     RealtimeViewer<Scalar> viewer;
 
-    if (!loadOBJ(PROJECT_SOURCE_DIR "/assets/sphere.obj", mesh)) {
+    if (!loadOBJ(PROJECT_SOURCE_DIR "/assets/spot.obj", mesh)) {
         std::cerr << "Failed to load mesh." << std::endl;
         return 1;
 	}
 
     std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
     solver.Initialize(mesh);
-    solver.SetInitialOffset({ Scalar(0), Scalar(0.5), Scalar(0)});
+    solver.SetInitialOffset({ Scalar(0), Scalar(1.0), Scalar(0)});
     auto& p = solver.GetParameters();
     p.energyType = NEOHOOKEAN;
-    p.solverType = IMPLICIT;
+    p.solverType = EXPLICIT;
 	p.dt = 1e-4f;
 
     if (!viewer.Initialize(solver.GetSurfaceMesh(), 1280, 720)) {

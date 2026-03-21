@@ -382,7 +382,6 @@ __global__ void k_Integrate(
     Real dt = params.dt;
     Real damping = params.damping;
 
-    // Add gravity
     Vec3 f = force[vid];
 
     // Acceleration

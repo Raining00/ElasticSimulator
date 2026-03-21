@@ -24,4 +24,3 @@ void extractSurfaceTriangles(
     const std::vector<Vec3f>& vertices,
     Mesh<Real>& surfaceMesh
 );
-

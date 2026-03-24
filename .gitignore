@@ -15,6 +15,7 @@ mono_crash.*
 build/
 .vscode/
 output/
+output_frame/
 bin/
 __pycache__/
 imgui.ini

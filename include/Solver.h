@@ -2,6 +2,7 @@
 #include "BaseStructure.hpp"
 #include <cstddef>
 #include <type_traits>
+#include <string>
 
 enum EnergyType
 {
@@ -20,6 +21,7 @@ enum SolverType
 typedef struct cublasContext* cublasHandle_t;
 typedef struct cusparseContext* cusparseHandle_t;
 typedef struct cusparseSpMatDescr* cusparseSpMatDescr_t;
+typedef struct cusparseDnVecDescr* cusparseDnVecDescr_t;
 
 template <typename Real>
 class ElasticitySolverT
@@ -51,10 +53,14 @@ public:
 
     void Initialize(const Mesh<Real>& mesh);
 
+    bool Initialize(const std::string& filename);
+
     void Simulate(unsigned int total_frame = 30, bool export_results = true);
     void SimulateFrame(bool export_result = false);
 
     void SetInitialOffset(const Vec3& offset);
+    void RotateVerticesByEulerAngles(const Vec3& euler_angles);
+    void RotateVerticesAroundCentroidByEulerAngles(const Vec3& euler_angles);
     void ExportMesh(unsigned int frame);
     const Mesh<Real>& GetSurfaceMesh() const;
     const Vec3* GetDeviceVertices() const;
@@ -98,12 +104,20 @@ private:
     int* d_elem_to_A_csr = nullptr;
 
     // for implicit solver. A x = B
-    Real* delta_x;
-    Real* b;
-    Real* r;
-    cusparseSpMatDescr_t A;
-    cublasHandle_t cublasH;
-    cusparseHandle_t cusparseH;
+    Real* delta_x = nullptr;
+    Real* b = nullptr;
+    Real* r = nullptr;
+    Real* p = nullptr;
+    Real* q = nullptr;
+    cusparseSpMatDescr_t A = nullptr;
+    cusparseDnVecDescr_t vecP = nullptr;
+    cusparseDnVecDescr_t vecQ = nullptr;
+    cublasHandle_t cublasH = nullptr;
+    cusparseHandle_t cusparseH = nullptr;
+    void* d_spmv_buffer = nullptr;
+    size_t spmv_buffer_size = 0;
+    int cg_max_iters = 0;
+    Real cg_tolerance = static_cast<Real>(1e-6);
 
     std::vector<int> h_A_row_offsets;
     std::vector<int> h_A_col_indices;

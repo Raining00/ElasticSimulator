@@ -20,7 +20,12 @@ public:
     RealtimeViewer();
     ~RealtimeViewer();
 
-    bool Initialize(const Mesh<Real>& surface_mesh, int width = 1280, int height = 720);
+    bool Initialize(
+        const Mesh<Real>& surface_mesh,
+        const Vector<Real, 3>& boundary_min,
+        const Vector<Real, 3>& boundary_max,
+        int width = 1280,
+        int height = 720);
     void Shutdown();
 
     bool ShouldClose() const;

@@ -78,13 +78,18 @@ struct RealtimeViewer<Real>::Impl
     GLuint vao = 0;
     GLuint vbo = 0;
     GLuint ebo = 0;
+    GLuint floor_vao = 0;
+    GLuint floor_vbo = 0;
+    GLuint floor_ebo = 0;
     GLuint program = 0;
     GLint u_mvp = -1;
+    GLint u_color = -1;
 
     cudaGraphicsResource* cuda_vbo = nullptr;
 
     size_t vertex_count = 0;
     size_t index_count = 0;
+    size_t floor_index_count = 0;
 
     int width = 1280;
     int height = 720;
@@ -297,7 +302,12 @@ RealtimeViewer<Real>::~RealtimeViewer()
 }
 
 template <typename Real>
-bool RealtimeViewer<Real>::Initialize(const Mesh<Real>& surface_mesh, int width, int height)
+bool RealtimeViewer<Real>::Initialize(
+    const Mesh<Real>& surface_mesh,
+    const Vector<Real, 3>& boundary_min,
+    const Vector<Real, 3>& boundary_max,
+    int width,
+    int height)
 {
     impl_->width = std::max(width, 1);
     impl_->height = std::max(height, 1);
@@ -343,9 +353,10 @@ bool RealtimeViewer<Real>::Initialize(const Mesh<Real>& surface_mesh, int width,
 
     const char* fs = R"(
         #version 330 core
+        uniform vec4 uColor;
         out vec4 FragColor;
         void main() {
-            FragColor = vec4(0.85, 0.88, 0.92, 1.0);
+            FragColor = uColor;
         }
     )";
 
@@ -357,9 +368,11 @@ bool RealtimeViewer<Real>::Initialize(const Mesh<Real>& surface_mesh, int width,
     }
 
     impl_->u_mvp = glGetUniformLocation(impl_->program, "uMVP");
+    impl_->u_color = glGetUniformLocation(impl_->program, "uColor");
 
     impl_->vertex_count = surface_mesh.vertices.size();
     impl_->index_count = surface_mesh.faces.size() * 3;
+    impl_->floor_index_count = 6;
 
     std::vector<uint32_t> indices;
     indices.reserve(impl_->index_count);
@@ -369,9 +382,26 @@ bool RealtimeViewer<Real>::Initialize(const Mesh<Real>& surface_mesh, int width,
         indices.push_back(static_cast<uint32_t>(f.verticesIndex.z));
     }
 
+    const float y_floor = static_cast<float>(boundary_min.y);
+    const float x_min = static_cast<float>(boundary_min.x);
+    const float x_max = static_cast<float>(boundary_max.x);
+    const float z_min = static_cast<float>(boundary_min.z);
+    const float z_max = static_cast<float>(boundary_max.z);
+
+    const std::vector<Vec3f> floor_vertices = {
+        { x_min, y_floor, z_min },
+        { x_max, y_floor, z_min },
+        { x_max, y_floor, z_max },
+        { x_min, y_floor, z_max }
+    };
+    const std::vector<uint32_t> floor_indices = { 0, 1, 2, 0, 2, 3 };
+
     glGenVertexArrays(1, &impl_->vao);
     glGenBuffers(1, &impl_->vbo);
     glGenBuffers(1, &impl_->ebo);
+    glGenVertexArrays(1, &impl_->floor_vao);
+    glGenBuffers(1, &impl_->floor_vbo);
+    glGenBuffers(1, &impl_->floor_ebo);
 
     glBindVertexArray(impl_->vao);
 
@@ -385,6 +415,23 @@ bool RealtimeViewer<Real>::Initialize(const Mesh<Real>& surface_mesh, int width,
         GL_ELEMENT_ARRAY_BUFFER,
         static_cast<GLsizeiptr>(indices.size() * sizeof(uint32_t)),
         indices.data(),
+        GL_STATIC_DRAW);
+
+    glBindVertexArray(impl_->floor_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, impl_->floor_vbo);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(floor_vertices.size() * sizeof(Vec3f)),
+        floor_vertices.data(),
+        GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vec3f), reinterpret_cast<void*>(0));
+    glEnableVertexAttribArray(0);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, impl_->floor_ebo);
+    glBufferData(
+        GL_ELEMENT_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(floor_indices.size() * sizeof(uint32_t)),
+        floor_indices.data(),
         GL_STATIC_DRAW);
 
     glBindVertexArray(0);
@@ -419,6 +466,18 @@ void RealtimeViewer<Real>::Shutdown()
     if (impl_->program != 0) {
         glDeleteProgram(impl_->program);
         impl_->program = 0;
+    }
+    if (impl_->floor_ebo != 0) {
+        glDeleteBuffers(1, &impl_->floor_ebo);
+        impl_->floor_ebo = 0;
+    }
+    if (impl_->floor_vbo != 0) {
+        glDeleteBuffers(1, &impl_->floor_vbo);
+        impl_->floor_vbo = 0;
+    }
+    if (impl_->floor_vao != 0) {
+        glDeleteVertexArrays(1, &impl_->floor_vao);
+        impl_->floor_vao = 0;
     }
     if (impl_->ebo != 0) {
         glDeleteBuffers(1, &impl_->ebo);
@@ -513,6 +572,13 @@ void RealtimeViewer<Real>::RenderFrame()
     glUseProgram(impl_->program);
     glUniformMatrix4fv(impl_->u_mvp, 1, GL_FALSE, glm::value_ptr(mvp));
 
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glUniform4f(impl_->u_color, 0.22f, 0.24f, 0.27f, 1.0f);
+    glBindVertexArray(impl_->floor_vao);
+    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(impl_->floor_index_count), GL_UNSIGNED_INT, nullptr);
+
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    glUniform4f(impl_->u_color, 0.85f, 0.88f, 0.92f, 1.0f);
     glBindVertexArray(impl_->vao);
     glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(impl_->index_count), GL_UNSIGNED_INT, nullptr);
     glBindVertexArray(0);

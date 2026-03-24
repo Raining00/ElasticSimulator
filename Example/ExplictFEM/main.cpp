@@ -3,8 +3,9 @@
 #include "Solver.h"
 #include "render/RealtimeViewer.h"
 #include "ProjectPaths.h"
+#include "glm/glm.hpp"
 
-using Scalar = float;
+using Scalar = double;
 
 int main()
 {
@@ -19,13 +20,23 @@ int main()
 
     std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
     solver.Initialize(mesh);
-    solver.SetInitialOffset({ Scalar(0), Scalar(1.0), Scalar(0)});
+    //solver.Initialize(PROJECT_SOURCE_DIR "/assets/spot/spot.1");
+    //solver.RotateVerticesAroundCentroidByEulerAngles({ Scalar(glm::radians(90.f)), Scalar(0.0), Scalar(0.0) });
+    solver.SetInitialOffset({ Scalar(0), Scalar(1), Scalar(0)});
     auto& p = solver.GetParameters();
     p.energyType = NEOHOOKEAN;
     p.solverType = EXPLICIT;
-	p.dt = 1e-4f;
+	p.dt = 1e-4;
+    p.damping = 0.001;
+    p.youngs_modulus = 1e5;
+    p.poisson_ratio = 0.4;
 
-    if (!viewer.Initialize(solver.GetSurfaceMesh(), 1280, 720)) {
+    if (!viewer.Initialize(
+        solver.GetSurfaceMesh(),
+        p.boundary_min,
+        p.boundary_max,
+        1280,
+        720)) {
         std::cerr << "Failed to initialize realtime viewer." << std::endl;
         return 1;
     }

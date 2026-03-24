@@ -5,6 +5,9 @@
 class tetgenio;
 
 template <typename Real>
+bool loadTetfile(const std::string& node_filename, const std::string& elem_filename);
+
+template <typename Real>
 bool loadOBJ(const std::string& filename, Mesh<Real>& mesh);
 
 template <typename Real>

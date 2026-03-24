@@ -24,8 +24,8 @@ def parse_args():
                         help="Subdivision level for default sphere (default: 3)")
     parser.add_argument("--model", type=str, default="stvk",
                         choices=["stvk", "corotated", "neohookean"],
-                        help="Elastic energy model (default: stvk)")
-    parser.add_argument("--E", type=float, default=1e5,
+                        help="Elastic energy model (default: neohookean)")
+    parser.add_argument("--E", type=float, default=1e6,
                         help="Young's modulus (default: 1e5)")
     parser.add_argument("--nu", type=float, default=0.45,
                         help="Poisson's ratio (default: 0.45)")

@@ -187,31 +187,66 @@ __device__ mat3<Real> P_NeoHookean(const mat3<Real>& F, Real mu, Real lambda, Re
 // The return results is vectorized.
 template <typename Real>
 __host__ __device__
-Mat9x12<Real> BuildBMatrixFromdFdx(const mat3<Real> dF_dx[12])
+Mat9x12<Real> computePFpx(const mat3<Real>& DmInv)
 {
-    Mat9x12<Real> B(Real(0));
+    Mat9x12<Real> PFPu(Real(0));
+    const Real m = DmInv(0, 0);
+    const Real n = DmInv(0, 1);
+    const Real o = DmInv(0, 2);
+    const Real p = DmInv(1, 0);
+    const Real q = DmInv(1, 1);
+    const Real r = DmInv(1, 2);
+    const Real s = DmInv(2, 0);
+    const Real t = DmInv(2, 1);
+    const Real u = DmInv(2, 2);
 
-    for (int a = 0; a < 12; ++a)
-    {
-        const mat3<Real>& M = dF_dx[a];
+    const Real t1 = -m - p - s;
+    const Real t2 = -n - q - t;
+    const Real t3 = -o - r - u;
 
-        B(0, a) = M(0, 0);
-        B(1, a) = M(1, 0);
-        B(2, a) = M(2, 0);
-        B(3, a) = M(0, 1);
-        B(4, a) = M(1, 1);
-        B(5, a) = M(2, 1);
-        B(6, a) = M(0, 2);
-        B(7, a) = M(1, 2);
-        B(8, a) = M(2, 2);
-    }
+    PFPu(0, 0)  = t1;
+    PFPu(0, 3)  = m;
+    PFPu(0, 6)  = p;
+    PFPu(0, 9)  = s;
+    PFPu(1, 1)  = t1;
+    PFPu(1, 4)  = m;
+    PFPu(1, 7)  = p;
+    PFPu(1, 10) = s;
+    PFPu(2, 2)  = t1;
+    PFPu(2, 5)  = m;
+    PFPu(2, 8)  = p;
+    PFPu(2, 11) = s;
+    PFPu(3, 0)  = t2;
+    PFPu(3, 3)  = n;
+    PFPu(3, 6)  = q;
+    PFPu(3, 9)  = t;
+    PFPu(4, 1)  = t2;
+    PFPu(4, 4)  = n;
+    PFPu(4, 7)  = q;
+    PFPu(4, 10) = t;
+    PFPu(5, 2)  = t2;
+    PFPu(5, 5)  = n;
+    PFPu(5, 8)  = q;
+    PFPu(5, 11) = t;
+    PFPu(6, 0)  = t3;
+    PFPu(6, 3)  = o;
+    PFPu(6, 6)  = r;
+    PFPu(6, 9)  = u;
+    PFPu(7, 1)  = t3;
+    PFPu(7, 4)  = o;
+    PFPu(7, 7)  = r;
+    PFPu(7, 10) = u;
+    PFPu(8, 2)  = t3;
+    PFPu(8, 5)  = o;
+    PFPu(8, 8)  = r;
+    PFPu(8, 11) = u;
 
-    return B;
+    return PFPu;
 }
 
 template <typename Real>
 __host__ __device__
-Mat9x9<Real> BuildMatrixGFromdJdF(const mat3<Real> dJdF)
+Mat9x9<Real> BuildMatrixGFromdJdF(const mat3<Real>& dJdF)
 {
     Mat9x9<Real> G(Real(0));
     Real g[9];
@@ -524,10 +559,8 @@ template <typename Real>
 __global__ void k_computeK(
     const Tetrahedron<Real>* __restrict__ tets,
     const mat3<Real>*      __restrict__ d_F,  // deformation gradient
-    const int* __restrict__ elem_to_A_csr,
-    Real* __restrict__ A_values,
     const Real* __restrict__ mass,
-    int nnz,
+    Real* __restrict__ DnA,
     int numTets
 )
 {
@@ -543,7 +576,6 @@ __global__ void k_computeK(
     const DevParams<Real>& params = GetDevParams<Real>();
     Real mu = params.mu;
     Real lambda = params.lambda;
-    Real dt = params.dt;
 
     Mat3 F = d_F[tid];
     Real J = Mat3::determinant(F);
@@ -553,72 +585,88 @@ __global__ void k_computeK(
     //Compute dF / dx = (dD_s / dx) * (Dm_Inv)
     Mat3 dF_dx[12];
     Mat3 Dm_inv = tet.Dm_inv;
-    Mat3 Dm_invT = Mat3::transpose(Dm_inv);
-    Vec3 g[4]; // gradients of shape functions
-    // g0, g1, g2 from Dm_inv^T columns
-    // g3 = -g0 - g1 - g2
-    g[1] = Dm_invT.column(0);
-    g[2] = Dm_invT.column(1);
-    g[3] = Dm_invT.column(2);
-    g[0] = - (g[1] + g[2] + g[3]);
-    #pragma unroll
-    for (int a = 0; a < 4; ++a) {
-        #pragma unroll
-        for (int c = 0; c < 3; ++c) {
-            Mat3 dF(Real(0));
-            for (int j = 0; j < 3; ++j) {
-                dF(c, j) = g[a][j];
-            }
-            dF_dx[a * 3 + c] = dF;
-        }
-    }
-    Mat9x12<Real> B = BuildBMatrixFromdFdx(dF_dx);
+    Mat9x12<Real> pFpx = computePFpx(Dm_inv);
 
-    /**
-     * 
-     * Compute dP / dF = mu * (dF / dFi) + lambda * (dJ / dFi) * (dJ / dF) + [lambda(J - 1) - mu] * (d^2 j / dFdFi)
-     * 
-     * vec(dF / dFi) = I9x9
-     * vec((dJ / dFi) * (dJ / dF)) = vec(dJ / dF) * vec(dJ / dF)^T
-     * dJ_dF = [f1 x f2 | f2 x f0) | f0 x f1];
-     * vec(d^2 j / dFdFi) = crossproduct[        0           crossproduct(-f2)    crossproduct(f1)
-     *                                   crossproduct(-f2)         0              crossproduct(-f0)
-     *                                   crossproduct(-f1)   crossproduct(f0)           0          ]
-     * Here f0, f1, f2 are the columes of deformation gradient matrix F.
-    */
-    // material Hessian
+    // Volume Hessian
     Vec3 f0 = F.column(0);
     Vec3 f1 = F.column(1);
     Vec3 f2 = F.column(2);
 
-    Mat3 dJ_dF(
+    Mat3 pJpF(
         cross(f1, f2),
         cross(f2, f0),
         cross(f0, f1)
     );
+    StaticMatrix<Real, 9, 1> pJpF_flatten;
+    pJpF_flatten(0, 0) = pJpF(0, 0);
+    pJpF_flatten(1, 0) = pJpF(1, 0);
+    pJpF_flatten(2, 0) = pJpF(2, 0);
+    pJpF_flatten(3, 0) = pJpF(0, 1);
+    pJpF_flatten(4, 0) = pJpF(1, 1);
+    pJpF_flatten(5, 0) = pJpF(2, 1);
+    pJpF_flatten(6, 0) = pJpF(0, 2);
+    pJpF_flatten(7, 0) = pJpF(1, 2);
+    pJpF_flatten(8, 0) = pJpF(2, 2);
 
-    Mat9x9<Real> G        = BuildMatrixGFromdJdF(dJ_dF);
-    Mat9x9<Real> hessianJ = BuildHessianMatrix(f0, f1, f2);
-    Mat9x9<Real> I9       = Mat9x9<Real>::Identity();
-
-    Mat9x9<Real> dP_dF =
-          mu * I9
-        + lambda * G
-        + (lambda * (J - Real(1)) - mu) * hessianJ;
-
-    Mat12x12<Real> Ke = -volume * (transpose(B) * dP_dF * B);
-
-    const Real dt2 = dt * dt;
-    // Scatter Ke to the global CSR Matrix.
-    const int* mapBase = elem_to_A_csr + tid * 12 * 12;
+    Real scale = lambda * (J - params._alpha);
+    const mat3<Real> f0hat = crossProductMatrix(f0) * scale;
+    const mat3<Real> f1hat = crossProductMatrix(f1) * scale;
+    const mat3<Real> f2hat = crossProductMatrix(f2) * scale;
+    Mat9x9<Real> hessJ(Real(0));
     #pragma unroll
-    for (int lr = 0; lr < 12; ++lr) {
+    for (int j = 0; j < 3; j++)
+    {
         #pragma unroll
-        for (int lc = 0; lc < 12; ++lc) {
-            const int csrIdx = mapBase[lr * 12 + lc];
-            atomicAdd(&A_values[csrIdx], Ke(lr, lc) * dt2);
+        for (int i = 0; i < 3; i++)
+        {
+            hessJ(i, j + 3) = Real(-1) * f2hat(i,j);
+            hessJ(i + 3, j) = f2hat(i,j);
+
+            hessJ(i, j + 6) = f1hat(i,j);
+            hessJ(i + 6, j) = Real(-1) * f1hat(i,j);
+
+            hessJ(i + 3, j + 6) = Real(-1) *f0hat(i,j);
+            hessJ(i + 6, j + 3) = f0hat(i,j);
         }
     }
+    Mat9x9<Real> I9       = Mat9x9<Real>::Identity();
+    Mat9x9<Real> hessian =
+          mu * I9
+        + lambda * pJpF_flatten * transpose(pJpF_flatten)
+        + hessJ;
+
+    Mat12x12<Real> Ke = -volume * (transpose(pFpx) * hessian * pFpx);
+    
+    Vec4i ids = tet.verticesIndex;
+    int map[12] = {
+        3 * ids.x + 0, 3 * ids.x + 1, 3 * ids.x + 2,
+        3 * ids.y + 0, 3 * ids.y + 1, 3 * ids.y + 2,
+        3 * ids.z + 0, 3 * ids.z + 1, 3 * ids.z + 2,
+        3 * ids.w + 0, 3 * ids.w + 1, 3 * ids.w + 2
+    };
+
+    #pragma unroll
+    for (int a = 0; a < 12; ++a)
+    {
+        int row = map[a];
+        #pragma unroll
+        for (int b = 0; b < 12; ++b)
+        {
+            int col = map[b];
+            atomicAdd(&DnA[row * dim + col], Ke(a, b));
+        }
+    }
+
+    // // Scatter Ke to the global CSR Matrix.
+    // const int* mapBase = elem_to_A_csr + tid * 12 * 12;
+    // #pragma unroll
+    // for (int lr = 0; lr < 12; ++lr) {
+    //     #pragma unroll
+    //     for (int lc = 0; lc < 12; ++lc) {
+    //         const int csrIdx = mapBase[lr * 12 + lc];
+    //         atomicAdd(&A_values[csrIdx], Ke(lr, lc));
+    //     }
+    // }
 }
 
 template <typename Real>
@@ -636,19 +684,16 @@ __global__ void k_Assemble(
     if (vid >= numVerts) return;
 
     const DevParams<Real>& params = GetDevParams<Real>();
-    const Real dt = params.dt;
-    const Real dt2 = dt * dt;
+    const Real invDt = Real(1) / params.dt;
+    const Real invDt2 = invDt;
     const Real m = mass[vid];
-    const Real invM = (m > static_cast<Real>(1e-12))
-        ? (static_cast<Real>(1) / m)
-        : static_cast<Real>(0);
 
     const int base = vid * 3;
     #pragma unroll
     for (int c = 0; c < 3; ++c) {
         const int diagIdx = d_A_diag_indices[base + c];
-        d_A_values[diagIdx] += m;
-        b[vid * 3 + c] = vn[vid][c] * dt + force[vid][c] * (invM * dt2);
+        d_A_values[diagIdx] = invDt2 * m - d_A_values[diagIdx];
+        b[vid * 3 + c] = invDt * m * vn[vid][c] + force[vid][c];
     }
 }
 

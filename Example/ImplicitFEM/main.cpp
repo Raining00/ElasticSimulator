@@ -25,12 +25,13 @@ int main()
     solver.SetInitialOffset({ Scalar(0), Scalar(1), Scalar(0)});
     auto& p = solver.GetParameters();
     p.energyType = NEOHOOKEAN;
-    p.solverType = EXPLICIT;
-	p.dt = 5e-4;
+    p.solverType = IMPLICIT;
+	p.dt = static_cast<Scalar>(1 / 60.f);
     p.damping = 0.001;
     p.youngs_modulus = 1e2;
     p.poisson_ratio = 0.3;
     p.density = 1.0;
+    p.substeps = 1;
 
     if (!viewer.Initialize(
         solver.GetSurfaceMesh(),

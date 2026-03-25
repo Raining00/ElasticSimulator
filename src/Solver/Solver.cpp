@@ -81,7 +81,11 @@ bool ElasticitySolverT<Real>::DataTransfer(const std::vector<Tetrahedron<Real>>&
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_mass), vertices.size() * sizeof(Real)));
     // Initialize masses to zero (this would typically be computed based on density and volume)
     CUDA_CHECK(cudaMemset(d_mass, 0, vertices.size() * sizeof(Real)));
-    
+
+    int A_size = vertices.size() * 3 * vertices.size() * 3 ;
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&DnA), A_size * sizeof(Real)));
+    CUDA_CHECK(cudaMemset(DnA, 0, A_size * sizeof(Real)));
+
     return true;
 }
 
@@ -184,7 +188,7 @@ void ElasticitySolverT<Real>::ExportMesh(unsigned int frame)
         };
     }
     // The faces of the surface mesh remain unchanged, so we can directly save it
-    std::string filename = PROJECT_SOURCE_DIR "output/frame_" + std::to_string(frame) + ".obj";
+    std::string filename = PROJECT_SOURCE_DIR "/output/frame_" + std::to_string(frame) + ".obj";
     std::cout << "save mesh as: " << filename << std::endl;
     saveOBJ(filename, suraceMesh);
 }
@@ -234,6 +238,7 @@ ElasticitySolverT<Real>::~ElasticitySolverT()
     CUDA_CHECK(cudaFree(p));
     CUDA_CHECK(cudaFree(q));
     CUDA_CHECK(cudaFree(d_spmv_buffer));
+    CUDA_CHECK(cudaFree(DnA));
 
     // cublas handle
     if (vecP) cusparseDestroyDnVec(vecP);

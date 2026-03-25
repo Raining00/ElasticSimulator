@@ -109,6 +109,7 @@ private:
     Real* r = nullptr;
     Real* p = nullptr;
     Real* q = nullptr;
+    Real* DnA;
     cusparseSpMatDescr_t A = nullptr;
     cusparseDnVecDescr_t vecP = nullptr;
     cusparseDnVecDescr_t vecQ = nullptr;

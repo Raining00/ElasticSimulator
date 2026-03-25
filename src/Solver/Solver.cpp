@@ -4,6 +4,8 @@
 #include "ProjectPaths.h"
 #include <cuda_runtime_api.h>
 #include <algorithm>
+#include <fstream>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <cublas_v2.h>
@@ -31,7 +33,6 @@
 
 template <typename Real>
 void CreateCSRMat(cusparseSpMatDescr_t& matA, int* d_A_row_offsets, int* d_A_col_indices, Real* d_A_values, int rows, int cols, int nnz);
-
 
 template <>
 void CreateCSRMat<float>(cusparseSpMatDescr_t& matA, int* d_A_row_offsets, int* d_A_col_indices, float* d_A_values, int rows, int cols, int nnz)
@@ -108,6 +109,65 @@ void ElasticitySolverT<Real>::Initialize(const Mesh<Real>& mesh)
     info_printed = false;
 }
 
+template <typename Real>
+bool ElasticitySolverT<Real>::Initialize(const std::string& filename)
+{
+    // 0. .node file
+    std::fstream nodeFS(filename + ".node");
+    // Node count, 3 dim, no attribute, no boundary marker
+    unsigned int nNodes, nDims, nNodeAttribs, nMarkers;
+    nodeFS >> nNodes >> nDims >> nNodeAttribs >> nMarkers;
+    bool nodeStartWithZero = false;
+
+    std::vector<Vec3f> tet_vertices_f(nNodes);
+
+    h_vertex.resize(nNodes);
+
+    for (unsigned int i = 0; i < nNodes; ++i)
+    {
+        unsigned int _;
+        nodeFS >> _ >> tet_vertices_f[i].x >> tet_vertices_f[i].y >> tet_vertices_f[i].z;
+        if (i == 0 && _ == 0) nodeStartWithZero = true;
+        for (unsigned int j = 0; j < nNodeAttribs + nMarkers; ++j)
+            nodeFS >> _;
+    }
+
+    for (size_t i = 0; i < tet_vertices_f.size(); ++i) {
+        h_vertex[i] = Vec3{
+            static_cast<Real>(tet_vertices_f[i].x),
+            static_cast<Real>(tet_vertices_f[i].y),
+            static_cast<Real>(tet_vertices_f[i].z)
+        };
+    }
+
+    // 1. .ele file
+    std::fstream eleFS(filename + ".ele");
+    // <# of tetrahedra> <nodes per tetrahedron> <# of attributes>
+    unsigned int nTets, nNodesPerTet, nEleAttribs;
+    eleFS >> nTets >> nNodesPerTet >> nEleAttribs;
+    h_tet.resize(nTets);
+    for (unsigned int i = 0; i < nTets; ++i)
+    {
+        Tetrahedron<Real>& tet = h_tet[i];
+        unsigned int _;
+        eleFS >> _ >> tet.verticesIndex.x >> tet.verticesIndex.y >> tet.verticesIndex.z >> tet.verticesIndex.w;
+        if (nodeStartWithZero == false)
+        {
+            tet.verticesIndex.x -= 1;tet.verticesIndex.y -= 1; tet.verticesIndex.z -= 1; tet.verticesIndex.w -= 1;
+        }
+        for (unsigned int j = 0; j < nEleAttribs; ++j)
+            eleFS >> _;
+    }
+
+    std::cout << "Tetrahedralization complete: " << h_tet.size() << " tetrahedra, " << h_vertex.size() << " vertices." << std::endl;
+    extractSurfaceTriangles(h_tet, tet_vertices_f, suraceMesh);
+    DataTransfer(h_tet, h_vertex);
+    csr_ready = false;
+    params_ready = false;
+    info_printed = false;
+
+    return true;
+}
 
 template <typename Real>
 void ElasticitySolverT<Real>::ExportMesh(unsigned int frame)
@@ -124,7 +184,8 @@ void ElasticitySolverT<Real>::ExportMesh(unsigned int frame)
         };
     }
     // The faces of the surface mesh remain unchanged, so we can directly save it
-    std::string filename = PROJECT_SOURCE_DIR "output/frame_" + std::to_string(frame) + ".obj";
+    std::string filename = PROJECT_SOURCE_DIR "/output/frame_" + std::to_string(frame) + ".obj";
+    std::cout << "save mesh as: " << filename << std::endl;
     saveOBJ(filename, suraceMesh);
 }
 
@@ -170,10 +231,16 @@ ElasticitySolverT<Real>::~ElasticitySolverT()
     CUDA_CHECK(cudaFree(delta_x));
     CUDA_CHECK(cudaFree(b));
     CUDA_CHECK(cudaFree(r));
+    CUDA_CHECK(cudaFree(p));
+    CUDA_CHECK(cudaFree(q));
+    CUDA_CHECK(cudaFree(d_spmv_buffer));
 
     // cublas handle
-    CUBLAS_CHECK(cublasDestroy(cublasH));
-    cusparseDestroy(cusparseH);
+    if (vecP) cusparseDestroyDnVec(vecP);
+    if (vecQ) cusparseDestroyDnVec(vecQ);
+    if (A) cusparseDestroySpMat(A);
+    if (cublasH) cublasDestroy(cublasH);
+    if (cusparseH) cusparseDestroy(cusparseH);
 }
 
 template <typename Real>
@@ -217,6 +284,7 @@ void ElasticitySolverT<Real>::Simulate(unsigned int total_frame, bool export_res
         std::cout << "Precomputing global CSR matrix topology..." << std::endl;
         BuildGlobalCsrFromTetMesh();
         UploadGlobalCsrToDevice();
+        InitCUDALib();
         csr_ready = true;
     }
 
@@ -401,6 +469,10 @@ void ElasticitySolverT<Real>::UploadGlobalCsrToDevice()
 template <typename Real>
 void ElasticitySolverT<Real>::InitCUDALib()
 {
+    if (cublasH != nullptr || cusparseH != nullptr) {
+        return;
+    }
+
     CUBLAS_CHECK(cublasCreate(&cublasH));
     cusparseCreate(&cusparseH);
     CreateCSRMat<Real>(A, d_A_row_offsets, d_A_col_indices, d_A_values, h_vertex.size() * 3, h_vertex.size() * 3, h_A_values.size());
@@ -414,6 +486,31 @@ void ElasticitySolverT<Real>::InitCUDALib()
 
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&r), dof * sizeof(Real)));
     CUDA_CHECK(cudaMemset(r, 0, dof * sizeof(Real)));
+
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&p), dof * sizeof(Real)));
+    CUDA_CHECK(cudaMemset(p, 0, dof * sizeof(Real)));
+
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&q), dof * sizeof(Real)));
+    CUDA_CHECK(cudaMemset(q, 0, dof * sizeof(Real)));
+
+    cusparseCreateDnVec(&vecP, dof, p, std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F);
+    cusparseCreateDnVec(&vecQ, dof, q, std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F);
+
+    const Real one = static_cast<Real>(1);
+    const Real zero = static_cast<Real>(0);
+    cusparseSpMV_bufferSize(
+        cusparseH,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        &one,
+        A,
+        vecP,
+        &zero,
+        vecQ,
+        std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F,
+        CUSPARSE_SPMV_ALG_DEFAULT,
+        &spmv_buffer_size);
+    CUDA_CHECK(cudaMalloc(&d_spmv_buffer, spmv_buffer_size));
+    cg_max_iters = static_cast<int>(dof);
 }
 
 template bool ElasticitySolverT<float>::DataTransfer(const std::vector<Tetrahedron<float>>&, const std::vector<Vec3f>&);
@@ -421,6 +518,9 @@ template bool ElasticitySolverT<double>::DataTransfer(const std::vector<Tetrahed
 
 template void ElasticitySolverT<float>::Initialize(const Mesh<float>&);
 template void ElasticitySolverT<double>::Initialize(const Mesh <double> &);
+
+template bool ElasticitySolverT<float>::Initialize(const std::string& name);
+template bool ElasticitySolverT<double>::Initialize(const std::string& name);
 
 template void ElasticitySolverT<float>::Simulate(unsigned int, bool);
 template void ElasticitySolverT<double>::Simulate(unsigned int, bool);

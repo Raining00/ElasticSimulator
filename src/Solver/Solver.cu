@@ -14,10 +14,13 @@
  */
 
 #include "Solver.h"
+#include "math/culib_helper.hpp"
 #include "math/decomposition.hpp"
 #include "iostream"
+#include <cmath>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
+#include <cusparse.h>
 
  // ─────────────────────────────────────────────────────────────────────────────
  // Helpers
@@ -29,6 +32,27 @@
         if (err != cudaSuccess) {                                               \
             std::cerr << "CUDA error in " << __FILE__ << " at line "           \
                       << __LINE__ << ": " << cudaGetErrorString(err) << "\n";  \
+            exit(EXIT_FAILURE);                                                 \
+        }                                                                       \
+    } while (0)
+
+#define CUBLAS_CHECK(call)                                                      \
+    do {                                                                        \
+        cublasStatus_t err = call;                                              \
+        if (err != CUBLAS_STATUS_SUCCESS) {                                     \
+            std::cerr << "cuBLAS error in " << __FILE__ << " at line "         \
+                      << __LINE__ << ": " << static_cast<int>(err) << "\n";   \
+            exit(EXIT_FAILURE);                                                 \
+        }                                                                       \
+    } while (0)
+
+#define CUSPARSE_CHECK(call)                                                    \
+    do {                                                                        \
+        cusparseStatus_t err = call;                                            \
+        if (err != CUSPARSE_STATUS_SUCCESS) {                                   \
+            std::cerr << "cuSPARSE error in " << __FILE__ << " at line "       \
+                      << __LINE__ << ": " << cusparseGetErrorString(err)       \
+                      << " (" << static_cast<int>(err) << ")\n";              \
             exit(EXIT_FAILURE);                                                 \
         }                                                                       \
     } while (0)
@@ -49,6 +73,7 @@ struct DevParams {
     Real damping;
     Real dt;
     Real density;
+    Real _alpha;
     Vector<Real, 3> gravity;
     Vector<Real, 3> boundary_min;
     Vector<Real, 3> boundary_max;
@@ -139,7 +164,7 @@ __device__ mat3<Real> P_Corotated(const mat3<Real>& F, Real mu, Real lambda)
 // Psi = mu/2*(I_C - 3) - mu*log(J) + lambda/2*(J-1)^2
 // P   = mu*(F - F^{-T}) + lambda*(J-1)*J*F^{-T}
 template <typename Real>
-__device__ mat3<Real> P_NeoHookean(const mat3<Real>& F, Real mu, Real lambda)
+__device__ mat3<Real> P_NeoHookean(const mat3<Real>& F, Real mu, Real lambda, Real alpha)
 {
     using Mat3 = mat3<Real>;
     using Vec3 = Vector<Real, 3>;
@@ -151,11 +176,11 @@ __device__ mat3<Real> P_NeoHookean(const mat3<Real>& F, Real mu, Real lambda)
     Vec3 col0 = F.column(0);
     Vec3 col1 = F.column(1);
     Vec3 col2 = F.column(2);
-    Mat3 adjFT = Mat3(cross(col1, col2), cross(col2, col0), cross(col0, col1));
+    Mat3 pJpF = Mat3(cross(col1, col2), cross(col2, col0), cross(col0, col1));
 
     // mu*(F - F^{-T}) + lambda*(J-1)*J * F^{-T}
     // Mat3 P = (F - Finvt) * mu + Finvt * (lambda * (J - static_cast<Real>(1)) * J);
-    Mat3 P = mu * F + (lambda * (J -1) - mu) * adjFT;
+    Mat3 P = mu * F + lambda * (J -alpha) * pJpF;
     return P;
 }
 
@@ -322,7 +347,7 @@ __global__ void k_ComputeForces(
 
     if (etype == 0)      P = P_STVK<Real>(F, mu, lambda);
     else if (etype == 1) P = P_Corotated<Real>(F, mu, lambda);
-    else                 P = P_NeoHookean<Real>(F, mu, lambda);
+    else                 P = P_NeoHookean<Real>(F, mu, lambda, params._alpha);
 
     // ─── Nodal forces from the stress ─────────────────────────────────────
     // f = -V0 * P * Dm^{-T}   (distributed to the four nodes)
@@ -669,6 +694,11 @@ void ElasticitySolverT<Real>::SetParams()
     dp.boundary_max = h_params.boundary_max;
     dp.energyType = static_cast<int>(h_params.energyType);
 
+    if (h_params.energyType == NEOHOOKEAN)
+        dp._alpha = Real(1) + h_params.mu / h_params.lambda;
+    else
+        dp._alpha = Real(0);
+
     if constexpr (std::is_same_v<Real, float>) {
         CUDA_CHECK(cudaMemcpyToSymbol(c_params_f, &dp, sizeof(DevParams<float>)));
     } else {
@@ -701,6 +731,90 @@ void ElasticitySolverT<Real>::SetInitialOffset(const Vec3& offset)
         v += offset;
     }
     CUDA_CHECK(cudaMemcpy(d_vertex,
+        h_vertex.data(),
+        h_vertex.size() * sizeof(Vec3),
+        cudaMemcpyHostToDevice));
+}
+
+template <typename Real>
+void ElasticitySolverT<Real>::RotateVerticesByEulerAngles(const Vec3& euler_angles)
+{
+    const Real cx = std::cos(euler_angles.x);
+    const Real sx = std::sin(euler_angles.x);
+    const Real cy = std::cos(euler_angles.y);
+    const Real sy = std::sin(euler_angles.y);
+    const Real cz = std::cos(euler_angles.z);
+    const Real sz = std::sin(euler_angles.z);
+
+    const mat3<Real> rot_x(
+        static_cast<Real>(1), static_cast<Real>(0), static_cast<Real>(0),
+        static_cast<Real>(0), cx, -sx,
+        static_cast<Real>(0), sx, cx);
+
+    const mat3<Real> rot_y(
+        cy, static_cast<Real>(0), sy,
+        static_cast<Real>(0), static_cast<Real>(1), static_cast<Real>(0),
+        -sy, static_cast<Real>(0), cy);
+
+    const mat3<Real> rot_z(
+        cz, -sz, static_cast<Real>(0),
+        sz, cz, static_cast<Real>(0),
+        static_cast<Real>(0), static_cast<Real>(0), static_cast<Real>(1));
+
+    const mat3<Real> rotation = rot_z * rot_y * rot_x;
+    for (auto& v : h_vertex) {
+        v = rotation * v;
+    }
+
+    CUDA_CHECK(cudaMemcpy(
+        d_vertex,
+        h_vertex.data(),
+        h_vertex.size() * sizeof(Vec3),
+        cudaMemcpyHostToDevice));
+}
+
+template <typename Real>
+void ElasticitySolverT<Real>::RotateVerticesAroundCentroidByEulerAngles(const Vec3& euler_angles)
+{
+    if (h_vertex.empty()) {
+        return;
+    }
+
+    Vec3 centroid{ static_cast<Real>(0), static_cast<Real>(0), static_cast<Real>(0) };
+    for (const auto& v : h_vertex) {
+        centroid += v;
+    }
+    centroid /= static_cast<Real>(h_vertex.size());
+
+    const Real cx = std::cos(euler_angles.x);
+    const Real sx = std::sin(euler_angles.x);
+    const Real cy = std::cos(euler_angles.y);
+    const Real sy = std::sin(euler_angles.y);
+    const Real cz = std::cos(euler_angles.z);
+    const Real sz = std::sin(euler_angles.z);
+
+    const mat3<Real> rot_x(
+        static_cast<Real>(1), static_cast<Real>(0), static_cast<Real>(0),
+        static_cast<Real>(0), cx, -sx,
+        static_cast<Real>(0), sx, cx);
+
+    const mat3<Real> rot_y(
+        cy, static_cast<Real>(0), sy,
+        static_cast<Real>(0), static_cast<Real>(1), static_cast<Real>(0),
+        -sy, static_cast<Real>(0), cy);
+
+    const mat3<Real> rot_z(
+        cz, -sz, static_cast<Real>(0),
+        sz, cz, static_cast<Real>(0),
+        static_cast<Real>(0), static_cast<Real>(0), static_cast<Real>(1));
+
+    const mat3<Real> rotation = rot_z * rot_y * rot_x;
+    for (auto& v : h_vertex) {
+        v = rotation * (v - centroid) + centroid;
+    }
+
+    CUDA_CHECK(cudaMemcpy(
+        d_vertex,
         h_vertex.data(),
         h_vertex.size() * sizeof(Vec3),
         cudaMemcpyHostToDevice));
@@ -748,13 +862,63 @@ void ElasticitySolverT<Real>::Step_Implicit()
         d_tet, d_F, d_elem_to_A_csr, d_A_values, d_mass, h_A_values.size(), numTets);
     CUDA_CHECK(cudaGetLastError());
 
-    // TODO: 
     k_Assemble<Real><<<grid1D(numVerts), 256>>>(
         d_A_diag_indices, d_A_values, this->b, d_vertex_velocity, d_force, d_mass, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
+    unsigned int iter = 0;
     // CG solver.
+    {
+        const int dof = numVerts * 3;
+        const Real zero = static_cast<Real>(0);
+        const Real one = static_cast<Real>(1);
+        const Real tol2 = cg_tolerance * cg_tolerance;
 
+        CUDA_CHECK(cudaMemset(delta_x, 0, sizeof(Real) * dof));
+        CUBLAS_CHECK(CublasOps<Real>::copy(cublasH, dof, b, 1, r, 1));
+        CUBLAS_CHECK(CublasOps<Real>::copy(cublasH, dof, r, 1, p, 1));
+
+        Real rr = static_cast<Real>(0);
+        CUBLAS_CHECK(CublasOps<Real>::dot(cublasH, dof, r, 1, r, 1, &rr));
+
+        for (int iter = 0; iter < cg_max_iters && rr > tol2; ++iter) {
+            CUSPARSE_CHECK(CusparseOps<Real>::SpMV(
+                cusparseH,
+                CUSPARSE_OPERATION_NON_TRANSPOSE,
+                &one,
+                A,
+                vecP,
+                &zero,
+                vecQ,
+                CUSPARSE_SPMV_ALG_DEFAULT,
+                d_spmv_buffer));
+
+            Real pAp = static_cast<Real>(0);
+            CUBLAS_CHECK(CublasOps<Real>::dot(cublasH, dof, p, 1, q, 1, &pAp));
+            if (pAp <= static_cast<Real>(0)) {
+                break;
+            }
+
+            const Real alpha = rr / pAp;
+            const Real neg_alpha = -alpha;
+            CUBLAS_CHECK(CublasOps<Real>::axpy(cublasH, dof, &alpha, p, 1, delta_x, 1));
+            CUBLAS_CHECK(CublasOps<Real>::axpy(cublasH, dof, &neg_alpha, q, 1, r, 1));
+
+            Real rr_new = static_cast<Real>(0);
+            CUBLAS_CHECK(CublasOps<Real>::dot(cublasH, dof, r, 1, r, 1, &rr_new));
+            if (rr_new <= tol2) {
+                rr = rr_new;
+                break;
+            }
+
+            const Real beta = rr_new / rr;
+            CUBLAS_CHECK(CublasOps<Real>::scale(cublasH, dof, &beta, p, 1));
+            CUBLAS_CHECK(CublasOps<Real>::axpy(cublasH, dof, &one, r, 1, p, 1));
+            rr = rr_new;
+            iter++;
+        }
+    }
+    std::cout << "CG solved in " << iter << "iterations." << std::endl;
     // Implicit integrate.
     k_integrateImplicit<Real><<<grid1D(numVerts), 256>>>(
         d_vertex, d_vertex_velocity, delta_x, numVerts);
@@ -792,6 +956,12 @@ template void ElasticitySolverT<double>::ComputeTetInitVolume();
 
 template void ElasticitySolverT<float>::SetInitialOffset(const ElasticitySolverT<float>::Vec3&);
 template void ElasticitySolverT<double>::SetInitialOffset(const ElasticitySolverT<double>::Vec3&);
+
+template void ElasticitySolverT<float>::RotateVerticesByEulerAngles(const ElasticitySolverT<float>::Vec3&);
+template void ElasticitySolverT<double>::RotateVerticesByEulerAngles(const ElasticitySolverT<double>::Vec3&);
+
+template void ElasticitySolverT<float>::RotateVerticesAroundCentroidByEulerAngles(const ElasticitySolverT<float>::Vec3&);
+template void ElasticitySolverT<double>::RotateVerticesAroundCentroidByEulerAngles(const ElasticitySolverT<double>::Vec3&);
 
 template void ElasticitySolverT<float>::Step_Explicit();
 template void ElasticitySolverT<double>::Step_Explicit();

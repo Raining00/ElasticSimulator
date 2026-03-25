@@ -653,7 +653,7 @@ __global__ void k_computeK(
         for (int b = 0; b < 12; ++b)
         {
             int col = map[b];
-            atomicAdd(&DnA[row * dim + col], Ke(a, b));
+            atomicAdd(&DnA[row * 3 + col], Ke(a, b));
         }
     }
 
@@ -904,7 +904,7 @@ void ElasticitySolverT<Real>::Step_Implicit()
 
     // Assemble linear system
     k_computeK<Real><< <grid1D(numTets), 256 >> >(
-        d_tet, d_F, d_elem_to_A_csr, d_A_values, d_mass, h_A_values.size(), numTets);
+        d_tet, d_F, d_mass, DnA, numTets);
     CUDA_CHECK(cudaGetLastError());
 
     k_Assemble<Real><<<grid1D(numVerts), 256>>>(

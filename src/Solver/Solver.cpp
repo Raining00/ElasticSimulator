@@ -97,6 +97,8 @@ void ElasticitySolverT<Real>::Initialize(const Mesh<Real>& mesh)
     // For simplicity, we assume the Mesh class has methods
     tetrahedralizeMesh(mesh, h_tet, tet_vertices_f);
     h_vertex.resize(tet_vertices_f.size());
+    h_velocity.resize(tet_vertices_f.size());
+    h_mass.assign(tet_vertices_f.size(), 0);
     for (size_t i = 0; i < tet_vertices_f.size(); ++i) {
         h_vertex[i] = Vec3{
             static_cast<Real>(tet_vertices_f[i].x),
@@ -126,6 +128,8 @@ bool ElasticitySolverT<Real>::Initialize(const std::string& filename)
     std::vector<Vec3f> tet_vertices_f(nNodes);
 
     h_vertex.resize(nNodes);
+    h_velocity.resize(nNodes);
+    h_mass.assign(nNodes, 0);
 
     for (unsigned int i = 0; i < nNodes; ++i)
     {
@@ -176,9 +180,14 @@ bool ElasticitySolverT<Real>::Initialize(const std::string& filename)
 template <typename Real>
 void ElasticitySolverT<Real>::ExportMesh(unsigned int frame)
 {
-    // Copy vertex data back to host and update the surface mesh vertices.
     std::vector<Vec3> host_vertices(h_vertex.size());
-    CUDA_CHECK(cudaMemcpy(host_vertices.data(), d_vertex, h_vertex.size() * sizeof(Vec3), cudaMemcpyDeviceToHost));
+    if(h_params.platformType == GPU)
+    {
+        CUDA_CHECK(cudaMemcpy(host_vertices.data(), d_vertex, h_vertex.size() * sizeof(Vec3), cudaMemcpyDeviceToHost));
+    }
+    else
+        host_vertices = h_vertex;
+    // Copy vertex data back to host and update the surface mesh vertices.
     this->suraceMesh.vertices.resize(host_vertices.size());
     for (size_t i = 0; i < host_vertices.size(); ++i) {
         suraceMesh.vertices[i] = Vec3 {

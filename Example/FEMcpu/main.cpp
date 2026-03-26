@@ -9,31 +9,28 @@ using Scalar = double;
 
 int main()
 {
-	Mesh<Scalar> mesh;
+    Mesh<Scalar> mesh;
     ElasticitySolverT<Scalar> solver;
     RealtimeViewer<Scalar> viewer;
 
     if (!loadOBJ(PROJECT_SOURCE_DIR "/assets/spot.obj", mesh)) {
         std::cerr << "Failed to load mesh." << std::endl;
         return 1;
-	}
-    
-    std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
+    }
 
+    std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
+    //solver.Initialize(mesh);
+    solver.Initialize(PROJECT_SOURCE_DIR "/assets/ellell.1");
+    solver.RotateVerticesAroundCentroidByEulerAngles({ Scalar(0), Scalar(0.0), Scalar(0.0) });
+    solver.SetInitialOffset({ Scalar(0), Scalar(1), Scalar(0) });
     auto& p = solver.GetParameters();
     p.energyType = NEOHOOKEAN;
-    p.solverType = IMPLICIT;
-	p.dt = static_cast<Scalar>(1 / 60.f);
+    p.solverType = EXPLICIT;
+    p.dt = 5e-4;
     p.damping = 0.001;
     p.youngs_modulus = 1e2;
     p.poisson_ratio = 0.3;
     p.density = 1.0;
-    p.substeps = 1;
-
-    //solver.Initialize(mesh);
-    solver.Initialize(PROJECT_SOURCE_DIR "/assets/ellell.1");
-    solver.RotateVerticesAroundCentroidByEulerAngles({ Scalar(0), Scalar(0.0), Scalar(0.0) });
-    solver.SetInitialOffset({ Scalar(0), Scalar(1), Scalar(0)});
 
     if (!viewer.Initialize(
         solver.GetSurfaceMesh(),

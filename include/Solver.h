@@ -17,6 +17,12 @@ enum SolverType
     IMPLICIT = 1,
 };
 
+enum Platform
+{
+    CPU = 0,
+    GPU = 1,
+};
+
 //Froward declaration
 typedef struct cublasContext* cublasHandle_t;
 typedef struct cusparseContext* cusparseHandle_t;
@@ -41,8 +47,10 @@ public:
         // lame parameters
         Real lambda = static_cast<Real>(0.0); // First Lame parameter
         Real mu = static_cast<Real>(0.0); // Second Lame parameter (shear modulus)
+        Real alpha = static_cast<Real>(0.0);
         EnergyType energyType = NEOHOOKEAN; // Type of elastic energy to use
         SolverType solverType = EXPLICIT; // Type of solver to use
+        Platform   platformType = GPU;
 		Vec3 gravity = { static_cast<Real>(0.0), static_cast<Real>(-9.81), static_cast<Real>(0.0) }; // Gravity vector
 		Vec3 boundary_min = { static_cast<Real>(-10.0), static_cast<Real>(0.0), static_cast<Real>(-10.0) }; // Minimum boundary for collision
 		Vec3 boundary_max = { static_cast<Real>(10.0), static_cast<Real>(10.0), static_cast<Real>(10.0) }; // Maximum boundary for collision
@@ -68,6 +76,8 @@ public:
 	Parameters& GetParameters() { return h_params; }
     const Parameters& GetParameters() const { return h_params; }
 
+    void SimulateCPU(bool export_results = false, int frame = 0);
+
 protected:
     bool DataTransfer(const std::vector<Tetrahedron<Real>>& tets, const std::vector<Vec3>& vertices);
 
@@ -81,12 +91,16 @@ protected:
     void Step_Explicit();
     void Step_Implicit();
 
+    void StepCPU();
+
     void PrintInfo() const;
 
 private:
     // host data
     std::vector<Tetrahedron<Real>> h_tet;
     std::vector<Vec3> h_vertex;
+    std::vector<Vec3> h_velocity;
+    std::vector<Real> h_mass;
 	Parameters h_params;
     Mesh<Real> suraceMesh;
 

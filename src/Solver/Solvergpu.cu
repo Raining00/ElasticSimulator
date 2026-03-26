@@ -540,7 +540,7 @@ __global__ void k_ComputeTetInitVolume(
 
     auto dminv = Mat3::inverse(Dm);
     for (int i = 0; i < 9; ++i) {
-        tet.Dm_inv[i] = static_cast<float>(dminv[i]);
+        tet.Dm_inv[i] = static_cast<Real>(dminv[i]);
     }
 }
 
@@ -671,8 +671,7 @@ __global__ void k_computeK(
 
 template <typename Real>
 __global__ void k_Assemble(
-    const int* __restrict__ d_A_diag_indices,
-    Real* __restrict__ d_A_values,
+    Real* __restrict__ DnA,
     Real* __restrict__ b,
     Vector<Real, 3>* __restrict__ vn,
     Vector<Real, 3>* __restrict__ force,
@@ -691,9 +690,9 @@ __global__ void k_Assemble(
     const int base = vid * 3;
     #pragma unroll
     for (int c = 0; c < 3; ++c) {
-        const int diagIdx = d_A_diag_indices[base + c];
-        d_A_values[diagIdx] = invDt2 * m - d_A_values[diagIdx];
-        b[vid * 3 + c] = invDt * m * vn[vid][c] + force[vid][c];
+        int diagIndex = (base + c) * numVerts + (base + c);
+        DnA[diagIndex] = invDt2 * m - DnA[diagIndex];
+        b[base + c] = invDt * m * vn[vid][c] + force[vid][c];
     }
 }
 
@@ -908,7 +907,7 @@ void ElasticitySolverT<Real>::Step_Implicit()
     CUDA_CHECK(cudaGetLastError());
 
     k_Assemble<Real><<<grid1D(numVerts), 256>>>(
-        d_A_diag_indices, d_A_values, this->b, d_vertex_velocity, d_force, d_mass, numVerts);
+        DnA, this->b, d_vertex_velocity, d_force, d_mass, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
     unsigned int iter = 0;

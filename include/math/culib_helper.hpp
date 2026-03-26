@@ -4,7 +4,6 @@
 #include <cuda_runtime.h>
 #include <cusparse.h>
 
-#ifndef CHECK_CUDA(func)
 #define CHECK_CUDA(func)                                                       \
 {                                                                              \
     cudaError_t status = (func);                                               \
@@ -14,9 +13,7 @@
         return EXIT_FAILURE;                                                   \
     }                                                                          \
 }
-#endif
 
-#ifndef CHECK_CUSPARSE(func)
 #define CHECK_CUSPARSE(func)                                                   \
 {                                                                              \
     cusparseStatus_t status = (func);                                          \
@@ -26,9 +23,7 @@
         return EXIT_FAILURE;                                                   \
     }                                                                          \
 }
-#endif
 
-#ifndef CHECK_CUBLAS(func)
 #define CHECK_CUBLAS(func)                                                     \
 {                                                                              \
     cublasStatus_t status = (func);                                            \
@@ -38,7 +33,6 @@
         return EXIT_FAILURE;                                                   \
     }                                                                          \
 }
-#endif
 
 template <typename T>
 struct CudaTypeTraits;

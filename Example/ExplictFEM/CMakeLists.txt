@@ -1,4 +1,4 @@
-add_elastic_example(ExplictFEM
+add_elastic_example(CPUFEM
     SOURCES
         main.cpp
 )

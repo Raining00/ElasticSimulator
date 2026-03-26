@@ -29,7 +29,8 @@ add_subdirectory(extern/glm)
 add_library(ElasticBody
     src/MeshToTet.cpp
     src/Solver/Solver.cpp
-    src/Solver/Solver.cu
+    src/Solver/Solvergpu.cu
+    src/Solver/Solvercpu.cpp
 )
 
 target_include_directories(ElasticBody

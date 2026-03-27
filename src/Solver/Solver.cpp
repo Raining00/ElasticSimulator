@@ -97,8 +97,12 @@ void ElasticitySolverT<Real>::Initialize(const Mesh<Real>& mesh)
     // For simplicity, we assume the Mesh class has methods
     tetrahedralizeMesh(mesh, h_tet, tet_vertices_f);
     h_vertex.resize(tet_vertices_f.size());
-    h_velocity.resize(tet_vertices_f.size());
-    h_mass.assign(tet_vertices_f.size(), 0);
+    if(h_params.platformType == CPU)
+    {
+        h_velocity.assign(tet_vertices_f.size(), Vec3({Real(0), Real(0), Real(0)}));
+        h_mass.assign(tet_vertices_f.size(), 0);
+    }
+    
     for (size_t i = 0; i < tet_vertices_f.size(); ++i) {
         h_vertex[i] = Vec3{
             static_cast<Real>(tet_vertices_f[i].x),
@@ -128,9 +132,12 @@ bool ElasticitySolverT<Real>::Initialize(const std::string& filename)
     std::vector<Vec3f> tet_vertices_f(nNodes);
 
     h_vertex.resize(nNodes);
-    h_velocity.resize(nNodes);
-    h_mass.assign(nNodes, 0);
-
+    if(h_params.platformType == CPU)
+    {
+        h_velocity.assign(nNodes, Vec3({Real(0), Real(0), Real(0)}));
+        h_mass.assign(nNodes, 0);
+    }
+    
     for (unsigned int i = 0; i < nNodes; ++i)
     {
         unsigned int _;

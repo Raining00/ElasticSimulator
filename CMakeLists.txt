@@ -24,7 +24,6 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 add_subdirectory(extern/tetgen)
 add_subdirectory(extern/glfw)
-add_subdirectory(extern/glm)
 
 add_library(ElasticBody
     src/MeshToTet.cpp

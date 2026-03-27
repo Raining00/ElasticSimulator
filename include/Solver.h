@@ -91,7 +91,8 @@ protected:
     void Step_Explicit();
     void Step_Implicit();
 
-    void StepCPU();
+    void StepCPUExplicit();
+    void StepCPUImplicit();
 
     void PrintInfo() const;
 

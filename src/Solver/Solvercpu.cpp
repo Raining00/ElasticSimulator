@@ -194,8 +194,8 @@ StaticMatrix<Real, 9, 1> partialJpartialF(const mat3<Real>& F)
     StaticMatrix<Real, 9, 1> pJpF(static_cast<Real>(0));
     unsigned int index = 0;
     for (unsigned int j = 0; j < 3; j++)
-    for (unsigned int i = 0; i < 3; i++, index++)
-        pJpF(index, 0) = A(i,j);
+        for (unsigned int i = 0; i < 3; i++, index++)
+            pJpF(index, 0) = A(i,j);
 
     return pJpF;
 }
@@ -227,7 +227,7 @@ Mat9x9<Real> computeHessian(const mat3<Real>& F, Real mu, Real lambda, Real alph
         }
     }
     Mat9x9<Real> I9 = Mat9x9<Real>::Identity();
-
+         
     return mu * I9 + lambda * pjpf * transpose(pjpf) + hessJ;
 }
 
@@ -284,6 +284,79 @@ void preCompute(std::vector<Tetrahedron<Real>>& tetrahedron, std::vector<Vector<
             mass[ids[j]] += tetMass;
         tet.Dm_inv = mat3<Real>::inverse(Dm);
     }
+}
+
+template<typename Real>
+inline void addPlaneBarrierContribution(
+    Real signedDistance,
+    int axis,
+    Real normalSign,
+    Real barrierDistance,
+    Real barrierStiffness,
+    Vector<Real, 3>& outForce,
+    Real* outDiagHessian3x3)
+{
+    // signedDistance > 0 表示在合法区域内
+    if (signedDistance >= barrierDistance)
+        return;
+
+    const Real eps = std::max(static_cast<Real>(1e-8),
+                              barrierDistance * static_cast<Real>(1e-4));
+    const Real d = std::max(signedDistance, eps);
+    const Real dhat = barrierDistance;
+    const Real k = barrierStiffness;
+
+    // E(d) = 0.5 * k * (1/d - 1/dhat)^2
+    // dE/dd = -k * (1/d - 1/dhat) / d^2
+    // f = -grad_x E = -dE/dd * n
+    const Real forceMag = k * (static_cast<Real>(1) / (d * d * d)
+                    - static_cast<Real>(1) / (dhat * d * d));
+
+    // d2E/dd2 = k * (3/d^4 - 2/(dhat*d^3))
+    const Real hessMag = k * (static_cast<Real>(3) / (d * d * d * d)
+                   - static_cast<Real>(2) / (dhat * d * d * d));
+
+    outForce[axis] += normalSign * forceMag;
+    outDiagHessian3x3[axis] += hessMag;
+}
+
+template<typename Real>
+inline void addAABBBarrierForVertex(
+    const Vector<Real, 3>& x,
+    const typename ElasticitySolverT<Real>::Parameters& params,
+    Vector<Real, 3>& outForce,
+    Real* outDiagHessian3x3)
+{
+    // clear outputs outside if needed
+    addPlaneBarrierContribution<Real>(
+        x[0] - params.boundary_min[0], 0, static_cast<Real>(+1),
+        params.barrier_distance, params.barrier_stiffness,
+        outForce, outDiagHessian3x3);
+
+    addPlaneBarrierContribution<Real>(
+        params.boundary_max[0] - x[0], 0, static_cast<Real>(-1),
+        params.barrier_distance, params.barrier_stiffness,
+        outForce, outDiagHessian3x3);
+
+    addPlaneBarrierContribution<Real>(
+        x[1] - params.boundary_min[1], 1, static_cast<Real>(+1),
+        params.barrier_distance, params.barrier_stiffness,
+        outForce, outDiagHessian3x3);
+
+    addPlaneBarrierContribution<Real>(
+        params.boundary_max[1] - x[1], 1, static_cast<Real>(-1),
+        params.barrier_distance, params.barrier_stiffness,
+        outForce, outDiagHessian3x3);
+
+    addPlaneBarrierContribution<Real>(
+        x[2] - params.boundary_min[2], 2, static_cast<Real>(+1),
+        params.barrier_distance, params.barrier_stiffness,
+        outForce, outDiagHessian3x3);
+
+    addPlaneBarrierContribution<Real>(
+        params.boundary_max[2] - x[2], 2, static_cast<Real>(-1),
+        params.barrier_distance, params.barrier_stiffness,
+        outForce, outDiagHessian3x3);
 }
 
 template<typename Real>
@@ -405,7 +478,7 @@ void ElasticitySolverT<Real>:: StepCPUImplicit()
         Mat9x12<Real> pFpx = computepFpx(DmInv);
         Mat9x9<Real>  hessian = -tet.volume * computeHessian(F, h_params.mu, h_params.lambda, h_params.alpha);
         perElementHessians[i] = (transpose(pFpx) * hessian) * pFpx;
-    }   
+    }
 
     for (unsigned int i = 0; i < h_tet.size(); i++)
     {
@@ -429,13 +502,28 @@ void ElasticitySolverT<Real>:: StepCPUImplicit()
         }
     }
 
-    for(unsigned int i = 0; i < h_vertex.size(); i++)
+    for (unsigned int i = 0; i < h_vertex.size(); i++)
     {
-        Real m = h_mass[i];
-        for(int j = 0; j < 3; j++)
+        Real barrierDiag[3] = { Real(0), Real(0), Real(0) };
+        Vec3 barrierForce{ Real(0), Real(0), Real(0) };
+
+        addAABBBarrierForVertex<Real>(
+            h_vertex[i],
+            h_params,
+            barrierForce,
+            barrierDiag);
+
+        force[i] += barrierForce;
+
+        const Real m = h_mass[i];
+        for (int j = 0; j < 3; j++)
         {
-            Real entry = invDt2  * m;
             const size_t diag = static_cast<size_t>(3 * i + j);
+
+            // A = M/dt^2 - df/dx
+            // 对于 barrier: f_c = -∇E_c, 所以 -df_c/dx = Hessian(E_c)
+            Real entry = invDt2 * m + barrierDiag[j];
+
             h_DnA[diag * (3 * numVerts) + diag] += entry;
             h_b[diag] = invDt * m * h_velocity[i][j] + force[i][j];
         }
@@ -443,7 +531,11 @@ void ElasticitySolverT<Real>:: StepCPUImplicit()
 
     const int dofs = static_cast<int>(3 * numVerts);
     bool converged = PCG(h_DnA, h_b, h_deltaX, std::max(64, dofs), static_cast<Real>(1e-8));
-
+    if (!converged)
+    {
+        printf("Warning: PCG did not converge in StepCPUImplicit().\n");
+        return;
+    }
     for (unsigned int i = 0; i < h_vertex.size(); ++i)
     {
         Vec3 dx{
@@ -453,12 +545,6 @@ void ElasticitySolverT<Real>:: StepCPUImplicit()
         };
         h_vertex[i] += dx;
         h_velocity[i] = dx / h_params.dt;
-
-        if (h_vertex[i][1] < h_params.boundary_min[1])
-        {
-            h_vertex[i][1] = h_params.boundary_min[1];
-            h_velocity[i] = -Real(0.2) * h_velocity[i];
-        }
     }
 }
 

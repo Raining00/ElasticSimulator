@@ -13,18 +13,17 @@ int main()
     ElasticitySolverT<Scalar> solver;
     RealtimeViewer<Scalar> viewer;
 
-    if (!loadOBJ(PROJECT_SOURCE_DIR "/assets/spot.obj", mesh)) {
-        std::cerr << "Failed to load mesh." << std::endl;
-        return 1;
-	}
-    
-    std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
+ //   if (!loadOBJ(PROJECT_SOURCE_DIR "/assets/spot.obj", mesh)) {
+ //       std::cerr << "Failed to load mesh." << std::endl;
+ //       return 1;
+	//}
+ //   
+ //   std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
 
     auto& p = solver.GetParameters();
     p.energyType = NEOHOOKEAN;
     p.solverType = IMPLICIT;
-	p.dt = static_cast<Scalar>(1 / 60.f);
-    p.damping = 0.001;
+    p.dt = 1 / 60.f;
     p.youngs_modulus = 1e2;
     p.poisson_ratio = 0.3;
     p.density = 1.0;
@@ -32,7 +31,7 @@ int main()
 
     //solver.Initialize(mesh);
     solver.Initialize(PROJECT_SOURCE_DIR "/assets/ellell.1");
-    solver.RotateVerticesAroundCentroidByEulerAngles({ Scalar(0), Scalar(0.0), Scalar(0.0) });
+    //solver.RotateVerticesAroundCentroidByEulerAngles({ Scalar(glm::radians(90.0)), Scalar(0.0), Scalar(0.0) });
     solver.SetInitialOffset({ Scalar(0), Scalar(1), Scalar(0)});
 
     if (!viewer.Initialize(

@@ -240,7 +240,7 @@ inline __host__ __device__ mat3<Real> crossProductMatrix(Vector<Real, 3> vec)
 {
     mat3<Real> crossProductMat( 0,     -vec[2], vec[1],
                          vec[2], 0,     -vec[0],
-                        -vec[1], vec[9], 0);
+                        -vec[1], vec[0], 0);
     return crossProductMat;
 }
 

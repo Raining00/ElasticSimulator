@@ -479,7 +479,7 @@ struct StaticMatrix
     StaticMatrix operator-() const
     {
         StaticMatrix out;
-        CUDA_UNROLL
+		CUDA_UNROLL
         for (int i = 0; i < Rows * Cols; ++i)
             out.data[i] = -data[i];
         return out;
@@ -500,7 +500,7 @@ struct StaticMatrix
     __host__ __device__ __forceinline__
     StaticMatrix& operator-=(const StaticMatrix& rhs)
     {
-        CUDA_UNROLL
+		CUDA_UNROLL
         for (int i = 0; i < Rows * Cols; ++i)
             data[i] -= rhs.data[i];
         return *this;
@@ -518,7 +518,7 @@ struct StaticMatrix
         return *this;
     }
 
-    __host__ __device__ __forceinline__
+    __host__ __device__ 
     StaticMatrix& operator/=(Real s)
     {
         CUDA_UNROLL
@@ -530,7 +530,7 @@ struct StaticMatrix
     // ------------------------------------------------------------
     // Utility
     // ------------------------------------------------------------
-    __host__ __device__ __forceinline__
+    __host__ __device__ 
     bool isZero(Real eps = Real(0)) const
     {
         CUDA_UNROLL
@@ -574,7 +574,7 @@ operator-(StaticMatrix<Real, Rows, Cols> lhs,
 // Matrix * scalar
 // ------------------------------------------------------------
 template <typename Real, int Rows, int Cols>
-__host__ __device__ __forceinline__
+__host__ __device__ 
 StaticMatrix<Real, Rows, Cols>
 operator*(StaticMatrix<Real, Rows, Cols> lhs, Real s)
 {
@@ -611,22 +611,20 @@ operator/(StaticMatrix<Real, Rows, Cols> lhs, Real s)
 // (M x K) * (K x N) = (M x N)
 // ------------------------------------------------------------
 template <typename Real, int M, int K, int N>
-__host__ __device__ __forceinline__
+__host__ __device__ 
 StaticMatrix<Real, M, N>
 operator*(const StaticMatrix<Real, M, K>& A,
           const StaticMatrix<Real, K, N>& B)
 {
     StaticMatrix<Real, M, N> C;
     //C.setZero();
-
-    CUDA_UNROLL
+	CUDA_UNROLL
     for (int i = 0; i < M; ++i)
     {
-        CUDA_UNROLL
+		CUDA_UNROLL
         for (int j = 0; j < N; ++j)
         {
             Real sum = Real(0);
-            CUDA_UNROLL
             for (int k = 0; k < K; ++k)
                 sum += A(i, k) * B(k, j);
             C(i, j) = sum;
@@ -639,15 +637,15 @@ operator*(const StaticMatrix<Real, M, K>& A,
 // Transpose
 // ------------------------------------------------------------
 template <typename Real, int Rows, int Cols>
-__host__ __device__ __forceinline__
+__host__ __device__ 
 StaticMatrix<Real, Cols, Rows>
 transpose(const StaticMatrix<Real, Rows, Cols>& A)
 {
     StaticMatrix<Real, Cols, Rows> T;
-    CUDA_UNROLL
+	CUDA_UNROLL
     for (int i = 0; i < Rows; ++i)
     {
-        CUDA_UNROLL
+		CUDA_UNROLL
         for (int j = 0; j < Cols; ++j)
             T(j, i) = A(i, j);
     }
@@ -658,12 +656,12 @@ transpose(const StaticMatrix<Real, Rows, Cols>& A)
 // Dot product for vectors
 // ------------------------------------------------------------
 template <typename Real, int N>
-__host__ __device__ __forceinline__
+__host__ __device__ 
 Real dot(const StaticMatrix<Real, N, 1>& a,
          const StaticMatrix<Real, N, 1>& b)
 {
     Real sum = Real(0);
-    CUDA_UNROLL
+	CUDA_UNROLL
     for (int i = 0; i < N; ++i)
         sum += a[i] * b[i];
     return sum;
@@ -685,49 +683,5 @@ template <typename Real> using Mat9x9   = StaticMatrix<Real, 9, 9>;
 template <typename Real> using Mat9x12  = StaticMatrix<Real, 9, 12>;
 template <typename Real> using Mat12x9  = StaticMatrix<Real, 12, 9>;
 template <typename Real> using Mat12x12 = StaticMatrix<Real, 12, 12>;
-
-/**
- * Used for matrial hessian. (d^2 J)/(dFdfi) 
- */
-template <typename Real, int BlockRows, int BlockCols>
-struct BlockMat3
-{
-    mat3<Real> blocks[BlockRows][BlockCols];
-
-    __host__ __device__ __forceinline__
-    mat3<Real>& operator()(int r, int c) { return blocks[r][c]; }
-
-    __host__ __device__ __forceinline__
-    const mat3<Real>& operator()(int r, int c) const { return blocks[r][c]; }
-};
-
-template <typename Real, int BR, int BC>
-__host__ __device__ __forceinline__
-StaticMatrix<Real, BR * 3, BC * 3> 
-FlattenBlockMat3(const BlockMat3<Real, BR, BC>& A)
-{
-    StaticMatrix<Real, BR * 3, BC * 3> out(Real(0));
-
-	CUDA_UNROLL
-    for (int bi = 0; bi < BR; ++bi)
-    {
-		CUDA_UNROLL
-        for (int bj = 0; bj < BC; ++bj)
-        {
-            const mat3<Real>& M = A(bi, bj);
-			CUDA_UNROLL
-            for (int r = 0; r < 3; ++r)
-            {
-				CUDA_UNROLL
-                for (int c = 0; c < 3; ++c)
-                {
-                    out(bi * 3 + r, bj * 3 + c) = M(r, c);
-                }
-            }
-        }
-    }
-    return out;
-}
-
 #endif
 

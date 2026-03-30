@@ -81,11 +81,7 @@ bool ElasticitySolverT<Real>::DataTransfer(const std::vector<Tetrahedron<Real>>&
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_mass), vertices.size() * sizeof(Real)));
     // Initialize masses to zero (this would typically be computed based on density and volume)
     CUDA_CHECK(cudaMemset(d_mass, 0, vertices.size() * sizeof(Real)));
-
-    int A_size = vertices.size() * 3 * vertices.size() * 3 ;
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&DnA), A_size * sizeof(Real)));
-    CUDA_CHECK(cudaMemset(DnA, 0, A_size * sizeof(Real)));
-
+    
     return true;
 }
 
@@ -249,10 +245,10 @@ ElasticitySolverT<Real>::~ElasticitySolverT()
 
     // CG solver
     CUDA_CHECK(cudaFree(delta_x));
-    CUDA_CHECK(cudaFree(b));
-    CUDA_CHECK(cudaFree(r));
-    CUDA_CHECK(cudaFree(p));
-    CUDA_CHECK(cudaFree(q));
+    CUDA_CHECK(cudaFree(d_b));
+    CUDA_CHECK(cudaFree(d_r));
+    CUDA_CHECK(cudaFree(d_p));
+    CUDA_CHECK(cudaFree(d_q));
     CUDA_CHECK(cudaFree(d_spmv_buffer));
     CUDA_CHECK(cudaFree(DnA));
 
@@ -332,12 +328,8 @@ void ElasticitySolverT<Real>::SimulateFrame(bool export_result)
         SetParams();
         // precompute volumes and mass.
         ComputeTetInitVolume();
-        if (h_params.solverType == IMPLICIT && !csr_ready) {
-            BuildGlobalCsrFromTetMesh();
-            UploadGlobalCsrToDevice();
+        if(h_params.solverType == IMPLICIT)
             InitCUDALib();
-            csr_ready = true;
-        }
         params_ready = true;
     }
     if (!info_printed) {
@@ -502,20 +494,23 @@ void ElasticitySolverT<Real>::InitCUDALib()
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&delta_x), dof * sizeof(Real)));
     CUDA_CHECK(cudaMemset(delta_x, 0, dof * sizeof(Real)));
 
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&b), dof * sizeof(Real)));
-    CUDA_CHECK(cudaMemset(b, 0, dof * sizeof(Real)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_b), dof * sizeof(Real)));
+    CUDA_CHECK(cudaMemset(d_b, 0, dof * sizeof(Real)));
 
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&r), dof * sizeof(Real)));
-    CUDA_CHECK(cudaMemset(r, 0, dof * sizeof(Real)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_r), dof * sizeof(Real)));
+    CUDA_CHECK(cudaMemset(d_r, 0, dof * sizeof(Real)));
 
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&p), dof * sizeof(Real)));
-    CUDA_CHECK(cudaMemset(p, 0, dof * sizeof(Real)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_p), dof * sizeof(Real)));
+    CUDA_CHECK(cudaMemset(d_p, 0, dof * sizeof(Real)));
 
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&q), dof * sizeof(Real)));
-    CUDA_CHECK(cudaMemset(q, 0, dof * sizeof(Real)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_q), dof * sizeof(Real)));
+    CUDA_CHECK(cudaMemset(d_q, 0, dof * sizeof(Real)));
 
-    cusparseCreateDnVec(&vecP, dof, p, std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F);
-    cusparseCreateDnVec(&vecQ, dof, q, std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F);
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&DnA), dof * dof * sizeof(Real)));
+    CUDA_CHECK(cudaMemset(DnA, 0, dof * dof * sizeof(Real)));
+
+    cusparseCreateDnVec(&vecP, dof, d_p, std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F);
+    cusparseCreateDnVec(&vecQ, dof, d_q, std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F);
 
     const Real one = static_cast<Real>(1);
     const Real zero = static_cast<Real>(0);

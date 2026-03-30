@@ -7,11 +7,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
+enable_language(CUDA)
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenGL REQUIRED)
 
 set(CMAKE_CUDA_ARCHITECTURES 75 80 86 87 89 90 100 110 120)
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets --extended-lambda")
+# set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS_DEBUG} -g -G")
 
 configure_file(
     ${CMAKE_SOURCE_DIR}/assets/ProjectPaths.h.in

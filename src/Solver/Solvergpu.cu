@@ -62,6 +62,118 @@ static dim3 grid1D(int n, int block = 256) {
     return dim3((n + block - 1) / block);
 }
 
+template <typename Real>
+struct DenseCublasOps;
+
+template <>
+struct DenseCublasOps<float> {
+    static cublasStatus_t gemv(
+        cublasHandle_t handle,
+        cublasOperation_t trans,
+        int m,
+        int n,
+        const float* alpha,
+        const float* A,
+        int lda,
+        const float* x,
+        int incx,
+        const float* beta,
+        float* y,
+        int incy)
+    {
+        return cublasSgemv(handle, trans, m, n, alpha, A, lda, x, incx, beta, y, incy);
+    }
+};
+
+template <>
+struct DenseCublasOps<double> {
+    static cublasStatus_t gemv(
+        cublasHandle_t handle,
+        cublasOperation_t trans,
+        int m,
+        int n,
+        const double* alpha,
+        const double* A,
+        int lda,
+        const double* x,
+        int incx,
+        const double* beta,
+        double* y,
+        int incy)
+    {
+        return cublasDgemv(handle, trans, m, n, alpha, A, lda, x, incx, beta, y, incy);
+    }
+};
+
+template <typename Real>
+static int DensePCG(
+    cublasHandle_t cublasH,
+    const Real* DnA,
+    Real* delta_x,
+    const Real* d_b,
+    Real* d_r,
+    Real* d_p,
+    Real* d_q,
+    int dof,
+    int maxIters,
+    Real tolerance)
+{
+    const Real zero = static_cast<Real>(0);
+    const Real one = static_cast<Real>(1);
+
+    CUDA_CHECK(cudaMemset(delta_x, 0, sizeof(Real) * static_cast<size_t>(dof)));
+    CUBLAS_CHECK(CublasOps<Real>::copy(cublasH, dof, d_b, 1, d_r, 1));
+    CUBLAS_CHECK(CublasOps<Real>::copy(cublasH, dof, d_r, 1, d_p, 1));
+
+    Real rr = static_cast<Real>(0);
+    CUBLAS_CHECK(CublasOps<Real>::dot(cublasH, dof, d_r, 1, d_r, 1, &rr));
+    if (std::sqrt(rr) <= tolerance) {
+        return 0;
+    }
+
+    int iter = 0;
+    for (; iter < maxIters; ++iter) {
+        CUBLAS_CHECK(DenseCublasOps<Real>::gemv(
+            cublasH,
+            CUBLAS_OP_T,
+            dof,
+            dof,
+            &one,
+            DnA,
+            dof,
+            d_p,
+            1,
+            &zero,
+            d_q,
+            1));
+
+        Real pAp = static_cast<Real>(0);
+        CUBLAS_CHECK(CublasOps<Real>::dot(cublasH, dof, d_p, 1, d_q, 1, &pAp));
+        if (std::abs(pAp) <= static_cast<Real>(1e-20)) {
+            break;
+        }
+
+        const Real alpha = rr / pAp;
+        CUBLAS_CHECK(CublasOps<Real>::axpy(cublasH, dof, &alpha, d_p, 1, delta_x, 1));
+        const Real negAlpha = -alpha;
+        CUBLAS_CHECK(CublasOps<Real>::axpy(cublasH, dof, &negAlpha, d_q, 1, d_r, 1));
+
+        Real rrNew = static_cast<Real>(0);
+        CUBLAS_CHECK(CublasOps<Real>::dot(cublasH, dof, d_r, 1, d_r, 1, &rrNew));
+        if (std::sqrt(rrNew) <= tolerance) {
+            ++iter;
+            break;
+        }
+
+        const Real beta = rrNew / rr;
+        CUBLAS_CHECK(CublasOps<Real>::scale(cublasH, dof, &beta, d_p, 1));
+        CUBLAS_CHECK(CublasOps<Real>::axpy(cublasH, dof, &one, d_r, 1, d_p, 1));
+        rr = rrNew;
+    }
+
+    return iter;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Device-side parameter struct (constant memory)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,7 +244,7 @@ __device__ __forceinline__ mat3<Real> computeF(
 // E = 0.5*(F'F - I)
 // P = F*(2*mu*E + lambda*tr(E)*I)
 template <typename Real>
-__device__ mat3<Real> P_STVK(const mat3<Real>& F, Real mu, Real lambda)
+__inline__ __device__ mat3<Real> P_STVK(const mat3<Real>& F, Real mu, Real lambda)
 {
     using Mat3 = mat3<Real>;
     Mat3 FtF = Mat3::multiplyAtB(F, F); // F^T * F
@@ -147,7 +259,7 @@ __device__ mat3<Real> P_STVK(const mat3<Real>& F, Real mu, Real lambda)
 // P = 2*mu*(F - R) + lambda*(J-1)*J * F^{-T}
 // Simplified linear form: P = 2*mu*(F-R) + lambda*tr(S-I)*R
 template <typename Real>
-__device__ mat3<Real> P_Corotated(const mat3<Real>& F, Real mu, Real lambda)
+__inline__ __device__ mat3<Real> P_Corotated(const mat3<Real>& F, Real mu, Real lambda)
 {
     using Mat3 = mat3<Real>;
     Mat3 R;
@@ -164,7 +276,7 @@ __device__ mat3<Real> P_Corotated(const mat3<Real>& F, Real mu, Real lambda)
 // Psi = mu/2*(I_C - 3) - mu*log(J) + lambda/2*(J-1)^2
 // P   = mu*(F - F^{-T}) + lambda*(J-1)*J*F^{-T}
 template <typename Real>
-__device__ mat3<Real> P_NeoHookean(const mat3<Real>& F, Real mu, Real lambda, Real alpha)
+__inline__ __device__ mat3<Real> P_NeoHookean(const mat3<Real>& F, Real mu, Real lambda, Real alpha)
 {
     using Mat3 = mat3<Real>;
     using Vec3 = Vector<Real, 3>;
@@ -186,8 +298,8 @@ __device__ mat3<Real> P_NeoHookean(const mat3<Real>& F, Real mu, Real lambda, Re
 
 // The return results is vectorized.
 template <typename Real>
-__host__ __device__
-Mat9x12<Real> computePFpx(const mat3<Real>& DmInv)
+__inline__ __device__
+Mat9x12<Real> computepFpx(const mat3<Real>& DmInv)
 {
     Mat9x12<Real> PFPu(Real(0));
     const Real m = DmInv(0, 0);
@@ -244,86 +356,54 @@ Mat9x12<Real> computePFpx(const mat3<Real>& DmInv)
     return PFPu;
 }
 
-template <typename Real>
-__host__ __device__
-Mat9x9<Real> BuildMatrixGFromdJdF(const mat3<Real>& dJdF)
+template<typename Real>
+__inline__ __device__ StaticMatrix<Real, 9, 1> partialJpartialF(const mat3<Real>& F)
 {
-    Mat9x9<Real> G(Real(0));
-    Real g[9];
+    mat3<Real> A(cross(F.column(1), F.column(2)),
+                 cross(F.column(2), F.column(0)),
+                 cross(F.column(0), F.column(1)));
 
-    g[0] = dJdF(0,0);
-    g[1] = dJdF(1,0);
-    g[2] = dJdF(2,0);
-    g[3] = dJdF(0,1);
-    g[4] = dJdF(1,1);
-    g[5] = dJdF(2,1);
-    g[6] = dJdF(0,2);
-    g[7] = dJdF(1,2);
-    g[8] = dJdF(2,2);
+    StaticMatrix<Real, 9, 1> pJpF(static_cast<Real>(0));
+    unsigned int index = 0;
+    #pragma unroll 3
+    for (unsigned int j = 0; j < 3; j++)
+        #pragma unroll 3
+        for (unsigned int i = 0; i < 3; i++, index++)
+            pJpF(index, 0) = A(i,j);
 
-    #pragma unroll
-    for (int r = 0; r < 9; ++r) {
-        #pragma unroll
-        for (int c = 0; c < 9; ++c) {
-            G(r, c) = g[r] * g[c];
+    return pJpF;
+}
+
+template<typename Real>
+__inline__ __device__ Mat9x9<Real> computeHessian(const mat3<Real>& F, Real mu, Real lambda, Real alpha)
+{
+    StaticMatrix<Real, 9, 1> pjpf = partialJpartialF(F);
+    const Real I3 = mat3<Real>::determinant(F);
+    const Real scale = lambda * (I3 - alpha);
+    const mat3<Real> f0hat = crossProductMatrix(F.column(0)) * scale;
+    const mat3<Real> f1hat = crossProductMatrix(F.column(1)) * scale;
+    const mat3<Real> f2hat = crossProductMatrix(F.column(2)) * scale;
+
+    Mat9x9<Real> hessJ(static_cast<Real>(0));
+    #pragma unroll 3
+    for (int j = 0; j < 3; j++)
+    {
+        #pragma unroll 3
+        for (int i = 0; i < 3; i++)
+        {
+            hessJ(i, j + 3) = Real(-1) * f2hat(i,j);
+            hessJ(i + 3, j) =  f2hat(i,j);
+
+            hessJ(i, j + 6) =  f1hat(i,j);
+            hessJ(i + 6, j) = Real(- 1) * f1hat(i, j);
+
+            hessJ(i + 3, j + 6) = Real(-1) * f0hat(i,j);
+            hessJ(i + 6, j + 3) =  f0hat(i,j);
         }
     }
+    Mat9x9<Real> I9 = mu * Mat9x9<Real>::Identity();
 
-    return G;
-}
-
-template <typename Real>
-__host__ __device__
-Mat9x9<Real> BuildHessianMatrix(const mat3<Real>& F)
-{
-    BlockMat3<Real, 3, 3> H;
-    Vector<Real, 3> f0 = F.column(0);
-    Vector<Real, 3> f1 = F.column(1);
-    Vector<Real, 3> f2 = F.column(2);
-
-    mat3<Real> f0hat = crossProductMatrix(f0);
-    mat3<Real> f1hat = crossProductMatrix(f1);
-    mat3<Real> f2hat = crossProductMatrix(f2);
-    mat3<Real> zeroMat(Real(0));
-
-    H(0, 0) = zeroMat;
-    H(0, 1) = Real(-1) * f2hat;
-    H(0, 2) = f1hat;
-    H(1, 0) = f2hat;
-    H(1, 1) = zeroMat;
-    H(1, 2) = Real(-1) * f0hat;
-    H(2, 0) = Real(-1) * f1hat;
-    H(2, 1) = f0hat;
-    H(2, 2) = zeroMat;
-
-    return FlattenBlockMat3(H);
-}
-
-template <typename Real>
-__host__ __device__
-Mat9x9<Real> BuildHessianMatrix(
-    const Vector<Real, 3>& f0, 
-    const Vector<Real, 3>& f1, 
-    const Vector<Real, 3>& f2)
-{
-    BlockMat3<Real, 3, 3> H;
-
-    mat3<Real> f0hat = crossProductMatrix(f0);
-    mat3<Real> f1hat = crossProductMatrix(f1);
-    mat3<Real> f2hat = crossProductMatrix(f2);
-    mat3<Real> zeroMat(Real(0));
-
-    H(0, 0) = zeroMat;
-    H(0, 1) = Real(-1) * f2hat;
-    H(0, 2) = f1hat;
-    H(1, 0) = f2hat;
-    H(1, 1) = zeroMat;
-    H(1, 2) = Real(-1) * f0hat;
-    H(2, 0) = Real(-1) *  f1hat;
-    H(2, 1) = f0hat;
-    H(2, 2) = zeroMat;
-
-    return FlattenBlockMat3(H);
+    return mu * I9 + lambda * pjpf * transpose(pjpf) + hessJ;
 }
 
 template <typename Real>
@@ -416,7 +496,6 @@ __global__ void k_ComputeForces(
     atomicAdd(&force[i3][0], f3[0]);
     atomicAdd(&force[i3][1], f3[1]);
     atomicAdd(&force[i3][2], f3[2]);
-
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -561,7 +640,8 @@ __global__ void k_computeK(
     const mat3<Real>*      __restrict__ d_F,  // deformation gradient
     const Real* __restrict__ mass,
     Real* __restrict__ DnA,
-    int numTets
+    int numTets,
+    int numVerts
 )
 {
     using Vec3 = Vector<Real, 3>;
@@ -570,103 +650,40 @@ __global__ void k_computeK(
     if (tid >= numTets) return;
 
     const Tetrahedron<Real>& tet = tets[tid]; 
-    //const Vec4i ids = tet.verticesIndex;
-    Real volume = tet.volume;
 
     const DevParams<Real>& params = GetDevParams<Real>();
     Real mu = params.mu;
     Real lambda = params.lambda;
 
-    Mat3 F = d_F[tid];
+    const Mat3& F = d_F[tid];
     Real J = Mat3::determinant(F);
     // Clamp J to avoid singularity
-    J = (J > static_cast<Real>(1e-4)) ? J : static_cast<Real>(1e-4);
+    //J = (J > static_cast<Real>(1e-4)) ? J : static_cast<Real>(1e-4);
 
     //Compute dF / dx = (dD_s / dx) * (Dm_Inv)
-    Mat3 dF_dx[12];
     Mat3 Dm_inv = tet.Dm_inv;
-    Mat9x12<Real> pFpx = computePFpx(Dm_inv);
+    Mat9x12<Real> pFpx = computepFpx(Dm_inv);
+    Mat9x9<Real>  hessian = -tet.volume * computeHessian(F, mu, lambda, params._alpha);
 
-    // Volume Hessian
-    Vec3 f0 = F.column(0);
-    Vec3 f1 = F.column(1);
-    Vec3 f2 = F.column(2);
-
-    Mat3 pJpF(
-        cross(f1, f2),
-        cross(f2, f0),
-        cross(f0, f1)
-    );
-    StaticMatrix<Real, 9, 1> pJpF_flatten;
-    pJpF_flatten(0, 0) = pJpF(0, 0);
-    pJpF_flatten(1, 0) = pJpF(1, 0);
-    pJpF_flatten(2, 0) = pJpF(2, 0);
-    pJpF_flatten(3, 0) = pJpF(0, 1);
-    pJpF_flatten(4, 0) = pJpF(1, 1);
-    pJpF_flatten(5, 0) = pJpF(2, 1);
-    pJpF_flatten(6, 0) = pJpF(0, 2);
-    pJpF_flatten(7, 0) = pJpF(1, 2);
-    pJpF_flatten(8, 0) = pJpF(2, 2);
-
-    Real scale = lambda * (J - params._alpha);
-    const mat3<Real> f0hat = crossProductMatrix(f0) * scale;
-    const mat3<Real> f1hat = crossProductMatrix(f1) * scale;
-    const mat3<Real> f2hat = crossProductMatrix(f2) * scale;
-    Mat9x9<Real> hessJ(Real(0));
-    #pragma unroll
-    for (int j = 0; j < 3; j++)
-    {
-        #pragma unroll
-        for (int i = 0; i < 3; i++)
-        {
-            hessJ(i, j + 3) = Real(-1) * f2hat(i,j);
-            hessJ(i + 3, j) = f2hat(i,j);
-
-            hessJ(i, j + 6) = f1hat(i,j);
-            hessJ(i + 6, j) = Real(-1) * f1hat(i,j);
-
-            hessJ(i + 3, j + 6) = Real(-1) *f0hat(i,j);
-            hessJ(i + 6, j + 3) = f0hat(i,j);
-        }
-    }
-    Mat9x9<Real> I9       = Mat9x9<Real>::Identity();
-    Mat9x9<Real> hessian =
-          mu * I9
-        + lambda * pJpF_flatten * transpose(pJpF_flatten)
-        + hessJ;
-
-    Mat12x12<Real> Ke = -volume * (transpose(pFpx) * hessian * pFpx);
+    Mat12x12<Real> Ke = (transpose(pFpx) * hessian) * pFpx;
     
     Vec4i ids = tet.verticesIndex;
-    int map[12] = {
-        3 * ids.x + 0, 3 * ids.x + 1, 3 * ids.x + 2,
-        3 * ids.y + 0, 3 * ids.y + 1, 3 * ids.y + 2,
-        3 * ids.z + 0, 3 * ids.z + 1, 3 * ids.z + 2,
-        3 * ids.w + 0, 3 * ids.w + 1, 3 * ids.w + 2
-    };
-
-    #pragma unroll
-    for (int a = 0; a < 12; ++a)
+    for (int y = 0; y < 4; y++)
     {
-        int row = map[a];
-        #pragma unroll
-        for (int b = 0; b < 12; ++b)
+        int yVertex = ids[y];
+        for (int x = 0; x < 4; x++)
         {
-            int col = map[b];
-            atomicAdd(&DnA[row * 3 + col], Ke(a, b));
+            int xVertex = ids[x];
+            for (int b = 0; b < 3; b++)
+                for (int a = 0; a < 3; a++)
+                {
+                    const Real entry = -Ke(3 * x + a, 3 * y + b);
+                    const size_t row = static_cast<size_t>(3 * xVertex + a);
+                    const size_t col = static_cast<size_t>(3 * yVertex + b);
+                    atomicAdd(&DnA[row * (3 * numVerts) + col], entry);
+                }
         }
     }
-
-    // // Scatter Ke to the global CSR Matrix.
-    // const int* mapBase = elem_to_A_csr + tid * 12 * 12;
-    // #pragma unroll
-    // for (int lr = 0; lr < 12; ++lr) {
-    //     #pragma unroll
-    //     for (int lc = 0; lc < 12; ++lc) {
-    //         const int csrIdx = mapBase[lr * 12 + lc];
-    //         atomicAdd(&A_values[csrIdx], Ke(lr, lc));
-    //     }
-    // }
 }
 
 template <typename Real>
@@ -684,15 +701,15 @@ __global__ void k_Assemble(
 
     const DevParams<Real>& params = GetDevParams<Real>();
     const Real invDt = Real(1) / params.dt;
-    const Real invDt2 = invDt;
+    const Real invDt2 = invDt * invDt;
     const Real m = mass[vid];
 
-    const int base = vid * 3;
     #pragma unroll
     for (int c = 0; c < 3; ++c) {
-        int diagIndex = (base + c) * numVerts + (base + c);
-        DnA[diagIndex] = invDt2 * m - DnA[diagIndex];
-        b[base + c] = invDt * m * vn[vid][c] + force[vid][c];
+        const size_t diag = static_cast<size_t>(3 * vid + c);
+
+        DnA[diag * (3 * numVerts) + diag] += invDt2 * m;
+        b[diag] = invDt * m * vn[vid][c] + force[vid][c];
     }
 }
 
@@ -894,75 +911,48 @@ void ElasticitySolverT<Real>::Step_Implicit()
         std::cerr << "Implicit solver currently only supports Neo-Hookean energy.\n";
         exit(EXIT_FAILURE);
     }
-    int numTets = static_cast<int>(h_tet.size());
-    int numVerts = static_cast<int>(h_vertex.size());
+    const int numTets = static_cast<int>(h_tet.size());
+    const int numVerts = static_cast<int>(h_vertex.size());
+    const int dof = 3 * numVerts;
+
+    if (cublasH == nullptr) {
+        InitCUDALib();
+    }
+
+    CUDA_CHECK(cudaMemset(DnA, 0, dof * dof * sizeof(Real)));
+    CUDA_CHECK(cudaMemset(d_force, 0, sizeof(Vec3) * numVerts));
+    CUDA_CHECK(cudaMemset(d_b, 0, dof * sizeof(Real)));
+
+    k_AddGravity<<<grid1D(numVerts), 256>>>(d_force, d_mass, numVerts);
+    CUDA_CHECK(cudaGetLastError());
 
     k_ComputeForces<Real><<<grid1D(numTets), 256>>>(
         d_tet, d_vertex, d_force, d_F, numTets);
     CUDA_CHECK(cudaGetLastError());
 
     // Assemble linear system
-    k_computeK<Real><< <grid1D(numTets), 256 >> >(
-        d_tet, d_F, d_mass, DnA, numTets);
+    k_computeK<Real><<<grid1D(numTets), 256>>>(
+        d_tet, d_F, d_mass, DnA, numTets, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
     k_Assemble<Real><<<grid1D(numVerts), 256>>>(
-        DnA, this->b, d_vertex_velocity, d_force, d_mass, numVerts);
+        DnA, d_b, d_vertex_velocity, d_force, d_mass, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
-    unsigned int iter = 0;
-    // CG solver.
-    {
-        const int dof = numVerts * 3;
-        const Real zero = static_cast<Real>(0);
-        const Real one = static_cast<Real>(1);
-        const Real tol2 = cg_tolerance * cg_tolerance;
+    int iter = DensePCG<Real>(
+        cublasH,
+        DnA,
+        delta_x,
+        d_b,
+        d_r,
+        d_p,
+        d_q,
+        dof,
+        cg_max_iters > 0 ? cg_max_iters : dof,
+        cg_tolerance);
+    
+    printf("PCG converged in %d iterations.\n", iter);
 
-        CUDA_CHECK(cudaMemset(delta_x, 0, sizeof(Real) * dof));
-        CUBLAS_CHECK(CublasOps<Real>::copy(cublasH, dof, b, 1, r, 1));
-        CUBLAS_CHECK(CublasOps<Real>::copy(cublasH, dof, r, 1, p, 1));
-
-        Real rr = static_cast<Real>(0);
-        CUBLAS_CHECK(CublasOps<Real>::dot(cublasH, dof, r, 1, r, 1, &rr));
-
-        for (int iter = 0; iter < cg_max_iters && rr > tol2; ++iter) {
-            CUSPARSE_CHECK(CusparseOps<Real>::SpMV(
-                cusparseH,
-                CUSPARSE_OPERATION_NON_TRANSPOSE,
-                &one,
-                A,
-                vecP,
-                &zero,
-                vecQ,
-                CUSPARSE_SPMV_ALG_DEFAULT,
-                d_spmv_buffer));
-
-            Real pAp = static_cast<Real>(0);
-            CUBLAS_CHECK(CublasOps<Real>::dot(cublasH, dof, p, 1, q, 1, &pAp));
-            if (pAp <= static_cast<Real>(0)) {
-                break;
-            }
-
-            const Real alpha = rr / pAp;
-            const Real neg_alpha = -alpha;
-            CUBLAS_CHECK(CublasOps<Real>::axpy(cublasH, dof, &alpha, p, 1, delta_x, 1));
-            CUBLAS_CHECK(CublasOps<Real>::axpy(cublasH, dof, &neg_alpha, q, 1, r, 1));
-
-            Real rr_new = static_cast<Real>(0);
-            CUBLAS_CHECK(CublasOps<Real>::dot(cublasH, dof, r, 1, r, 1, &rr_new));
-            if (rr_new <= tol2) {
-                rr = rr_new;
-                break;
-            }
-
-            const Real beta = rr_new / rr;
-            CUBLAS_CHECK(CublasOps<Real>::scale(cublasH, dof, &beta, p, 1));
-            CUBLAS_CHECK(CublasOps<Real>::axpy(cublasH, dof, &one, r, 1, p, 1));
-            rr = rr_new;
-            iter++;
-        }
-    }
-    std::cout << "CG solved in " << iter << "iterations." << std::endl;
     // Implicit integrate.
     k_integrateImplicit<Real><<<grid1D(numVerts), 256>>>(
         d_vertex, d_vertex_velocity, delta_x, numVerts);
@@ -972,11 +962,6 @@ void ElasticitySolverT<Real>::Step_Implicit()
     k_BoundaryCheck<Real><<<grid1D(numVerts), 256>>>(
         d_vertex, d_vertex_velocity, numVerts);
     CUDA_CHECK(cudaGetLastError());
-
-    CUDA_CHECK(cudaMemset(d_A_values, 0, sizeof(Real) * h_A_values.size()));
-    CUDA_CHECK(cudaMemset(this->b, 0, sizeof(Real) * 3 * numVerts));
-    CUDA_CHECK(cudaMemset(delta_x, 0, sizeof(Real) * 3 * numVerts));
-    CUDA_CHECK(cudaMemset(d_force, 0, sizeof(Vec3) * numVerts));
 
     CUDA_CHECK(cudaDeviceSynchronize());
 }

@@ -51,6 +51,8 @@ public:
         EnergyType energyType = NEOHOOKEAN; // Type of elastic energy to use
         SolverType solverType = EXPLICIT; // Type of solver to use
         Platform   platformType = GPU;
+        Real barrier_distance = static_cast<Real>(0.02);     // barrier active distance
+        Real barrier_stiffness = static_cast<Real>(5e3);     // barrier strenth
 		Vec3 gravity = { static_cast<Real>(0.0), static_cast<Real>(-9.81), static_cast<Real>(0.0) }; // Gravity vector
 		Vec3 boundary_min = { static_cast<Real>(-10.0), static_cast<Real>(0.0), static_cast<Real>(-10.0) }; // Minimum boundary for collision
 		Vec3 boundary_max = { static_cast<Real>(10.0), static_cast<Real>(10.0), static_cast<Real>(10.0) }; // Maximum boundary for collision
@@ -120,10 +122,10 @@ private:
 
     // for implicit solver. A x = B
     Real* delta_x = nullptr;
-    Real* b = nullptr;
-    Real* r = nullptr;
-    Real* p = nullptr;
-    Real* q = nullptr;
+    Real* d_b = nullptr;
+    Real* d_r = nullptr;
+    Real* d_p = nullptr;
+    Real* d_q = nullptr;
     Real* DnA;
     cusparseSpMatDescr_t A = nullptr;
     cusparseDnVecDescr_t vecP = nullptr;

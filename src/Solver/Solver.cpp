@@ -113,6 +113,7 @@ void ElasticitySolverT<Real>::Initialize(const Mesh<Real>& mesh)
     csr_ready = false;
     params_ready = false;
     info_printed = false;
+    frame_counter = 0;
 }
 
 template <typename Real>
@@ -176,6 +177,7 @@ bool ElasticitySolverT<Real>::Initialize(const std::string& filename)
     csr_ready = false;
     params_ready = false;
     info_printed = false;
+    frame_counter = 0;
 
     return true;
 }
@@ -258,6 +260,63 @@ ElasticitySolverT<Real>::~ElasticitySolverT()
     if (A) cusparseDestroySpMat(A);
     if (cublasH) cublasDestroy(cublasH);
     if (cusparseH) cusparseDestroy(cusparseH);
+}
+
+template <typename Real>
+void ElasticitySolverT<Real>::AdvanceFrame(bool export_result)
+{
+    if (h_params.platformType == CPU) {
+        SimulateCPU(export_result, static_cast<int>(frame_counter));
+        ++frame_counter;
+        return;
+    }
+
+    SimulateFrame(export_result);
+    ++frame_counter;
+}
+
+template <typename Real>
+PhysicsObjectType ElasticitySolverT<Real>::GetObjectType() const
+{
+    return PHYSICS_OBJECT_ELASTIC;
+}
+
+template <typename Real>
+typename ElasticitySolverT<Real>::AABB ElasticitySolverT<Real>::GetWorldBounds() const
+{
+    AABB bounds;
+    if (h_vertex.empty())
+        return bounds;
+
+    std::vector<Vec3> host_vertices;
+    if (h_params.platformType == GPU) {
+        host_vertices.resize(h_vertex.size());
+        CUDA_CHECK(cudaMemcpy(host_vertices.data(), d_vertex, h_vertex.size() * sizeof(Vec3), cudaMemcpyDeviceToHost));
+    }
+
+    const std::vector<Vec3>& vertices = (h_params.platformType == GPU) ? host_vertices : h_vertex;
+    bounds.valid = true;
+    bounds.min = vertices[0];
+    bounds.max = vertices[0];
+
+    for (const Vec3& v : vertices) {
+        bounds.min.x = std::min(bounds.min.x, v.x);
+        bounds.min.y = std::min(bounds.min.y, v.y);
+        bounds.min.z = std::min(bounds.min.z, v.z);
+        bounds.max.x = std::max(bounds.max.x, v.x);
+        bounds.max.y = std::max(bounds.max.y, v.y);
+        bounds.max.z = std::max(bounds.max.z, v.z);
+    }
+    return bounds;
+}
+
+template <typename Real>
+void ElasticitySolverT<Real>::SetWorldCollisionSettings(const CollisionSettings& settings)
+{
+    h_params.boundary_min = settings.boundary_min;
+    h_params.boundary_max = settings.boundary_max;
+    h_params.barrier_distance = settings.barrier_distance;
+    h_params.barrier_stiffness = settings.barrier_stiffness;
 }
 
 template <typename Real>
@@ -541,6 +600,9 @@ template bool ElasticitySolverT<double>::Initialize(const std::string& name);
 template void ElasticitySolverT<float>::Simulate(unsigned int, bool);
 template void ElasticitySolverT<double>::Simulate(unsigned int, bool);
 
+template void ElasticitySolverT<float>::AdvanceFrame(bool);
+template void ElasticitySolverT<double>::AdvanceFrame(bool);
+
 template void ElasticitySolverT<float>::SimulateFrame(bool);
 template void ElasticitySolverT<double>::SimulateFrame(bool);
 
@@ -558,6 +620,15 @@ template const Mesh<double>& ElasticitySolverT<double>::GetSurfaceMesh() const;
 
 template const ElasticitySolverT<float>::Vec3* ElasticitySolverT<float>::GetDeviceVertices() const;
 template const ElasticitySolverT<double>::Vec3* ElasticitySolverT<double>::GetDeviceVertices() const;
+
+template PhysicsObjectType ElasticitySolverT<float>::GetObjectType() const;
+template PhysicsObjectType ElasticitySolverT<double>::GetObjectType() const;
+
+template ElasticitySolverT<float>::AABB ElasticitySolverT<float>::GetWorldBounds() const;
+template ElasticitySolverT<double>::AABB ElasticitySolverT<double>::GetWorldBounds() const;
+
+template void ElasticitySolverT<float>::SetWorldCollisionSettings(const ElasticitySolverT<float>::CollisionSettings&);
+template void ElasticitySolverT<double>::SetWorldCollisionSettings(const ElasticitySolverT<double>::CollisionSettings&);
 
 template void ElasticitySolverT<float>::InitCUDALib();
 template void ElasticitySolverT<double>::InitCUDALib();

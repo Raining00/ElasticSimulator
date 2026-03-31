@@ -382,12 +382,14 @@ void ElasticitySolverT<Real>::SimulateCPU(bool export_results, int frameId)
         {
             StepCPUExplicit();
         }
-        ExportMesh(frameId / 10);
+        if (export_results)
+            ExportMesh(frameId / 10);
     }
     else
     {
         StepCPUImplicit();
-        ExportMesh(frameId);
+        if (export_results)
+            ExportMesh(frameId);
     }
 }
 

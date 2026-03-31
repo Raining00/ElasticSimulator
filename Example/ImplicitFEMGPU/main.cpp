@@ -1,5 +1,6 @@
 #include <iostream>
 #include "MeshToTet.hpp"
+#include "PhysicsWorld.h"
 #include "Solver.h"
 #include "render/RealtimeViewer.h"
 #include "ProjectPaths.h"
@@ -11,6 +12,7 @@ int main()
 {
 	Mesh<Scalar> mesh;
     ElasticitySolverT<Scalar> solver;
+    PhysicsWorldT<Scalar> world;
     RealtimeViewer<Scalar> viewer;
 
  //   if (!loadOBJ(PROJECT_SOURCE_DIR "/assets/spot.obj", mesh)) {
@@ -23,21 +25,27 @@ int main()
     auto& p = solver.GetParameters();
     p.energyType = NEOHOOKEAN;
     p.solverType = IMPLICIT;
-    p.dt = 1 / 60.f;
+    p.dt = 1e-3;
     p.youngs_modulus = 1e2;
     p.poisson_ratio = 0.3;
     p.density = 1.0;
     p.substeps = 1;
+    auto& world_collision = world.GetCollisionSettings();
+    world_collision.boundary_min = p.boundary_min;
+    world_collision.boundary_max = p.boundary_max;
+    world_collision.barrier_distance = p.barrier_distance;
+    world_collision.barrier_stiffness = p.barrier_stiffness;
 
     //solver.Initialize(mesh);
     solver.Initialize(PROJECT_SOURCE_DIR "/assets/ellell.1");
     //solver.RotateVerticesAroundCentroidByEulerAngles({ Scalar(glm::radians(90.0)), Scalar(0.0), Scalar(0.0) });
     solver.SetInitialOffset({ Scalar(0), Scalar(1), Scalar(0)});
+    world.AddObject(solver);
 
     if (!viewer.Initialize(
         solver.GetSurfaceMesh(),
-        p.boundary_min,
-        p.boundary_max,
+        world_collision.boundary_min,
+        world_collision.boundary_max,
         1280,
         720)) {
         std::cerr << "Failed to initialize realtime viewer." << std::endl;
@@ -45,7 +53,7 @@ int main()
     }
 
     while (!viewer.ShouldClose()) {
-        solver.SimulateFrame(false);
+        world.AdvanceFrame(false);
         viewer.UpdateFromCuda(solver.GetDeviceVertices(), solver.GetVertexCount());
         viewer.RenderFrame();
         viewer.PollEvents();

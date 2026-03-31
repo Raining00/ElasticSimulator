@@ -1,5 +1,6 @@
 #pragma once
 #include "BaseStructure.hpp"
+#include "PhysicsWorld.h"
 #include <cstddef>
 #include <type_traits>
 #include <string>
@@ -30,11 +31,13 @@ typedef struct cusparseSpMatDescr* cusparseSpMatDescr_t;
 typedef struct cusparseDnVecDescr* cusparseDnVecDescr_t;
 
 template <typename Real>
-class ElasticitySolverT
+class ElasticitySolverT : public PhysicsObjectT<Real>
 {
 public:
     using Scalar = Real;
     using Vec3 = Vector<Real, 3>;
+    using AABB = PhysicsAABBT<Real>;
+    using CollisionSettings = WorldCollisionSettingsT<Real>;
 
     struct Parameters
     {
@@ -59,12 +62,13 @@ public:
     };
 
     ElasticitySolverT() = default;
-    ~ElasticitySolverT();
+    ~ElasticitySolverT() override;
 
     void Initialize(const Mesh<Real>& mesh);
 
     bool Initialize(const std::string& filename);
 
+    void AdvanceFrame(bool export_result = false) override;
     void Simulate(unsigned int total_frame = 30, bool export_results = true);
     void SimulateFrame(bool export_result = false);
 
@@ -72,9 +76,12 @@ public:
     void RotateVerticesByEulerAngles(const Vec3& euler_angles);
     void RotateVerticesAroundCentroidByEulerAngles(const Vec3& euler_angles);
     void ExportMesh(unsigned int frame);
-    const Mesh<Real>& GetSurfaceMesh() const;
-    const Vec3* GetDeviceVertices() const;
-    size_t GetVertexCount() const;
+    const Mesh<Real>& GetSurfaceMesh() const override;
+    const Vec3* GetDeviceVertices() const override;
+    size_t GetVertexCount() const override;
+    PhysicsObjectType GetObjectType() const override;
+    AABB GetWorldBounds() const override;
+    void SetWorldCollisionSettings(const CollisionSettings& settings) override;
 	Parameters& GetParameters() { return h_params; }
     const Parameters& GetParameters() const { return h_params; }
 
@@ -146,6 +153,7 @@ private:
     bool csr_ready = false;
     bool params_ready = false;
     bool info_printed = false;
+    unsigned int frame_counter = 0;
 };
 
 using ElasticitySolverf = ElasticitySolverT<float>;

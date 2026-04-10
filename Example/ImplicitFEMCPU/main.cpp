@@ -20,6 +20,7 @@ int main()
     p.poisson_ratio = 0.4;
     p.density = 1;
     p.platformType = CPU;
+    p.barrier_stiffness = 5e2;
     auto& world_collision = world.GetCollisionSettings();
     world_collision.boundary_min = p.boundary_min;
     world_collision.boundary_max = p.boundary_max;

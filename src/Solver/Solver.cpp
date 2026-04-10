@@ -236,24 +236,28 @@ ElasticitySolverT<Real>::~ElasticitySolverT()
     CUDA_CHECK(cudaFree(d_force));
     CUDA_CHECK(cudaFree(d_F));
 
-    if (h_params.solverType != IMPLICIT)
+    const bool isImplicitGPU =
+        (h_params.platformType == GPU) &&
+        (h_params.solverType == IMPLICIT || h_params.solverType == IMPLICIT_SPARSE);
+    if (!isImplicitGPU)
         return;
     // CSR matrix
-    CUDA_CHECK(cudaFree(d_A_row_offsets));
-    CUDA_CHECK(cudaFree(d_A_col_indices));
-    CUDA_CHECK(cudaFree(d_A_diag_indices));
-    CUDA_CHECK(cudaFree(d_A_values));
-    CUDA_CHECK(cudaFree(d_elem_to_A_csr));
+    if (d_A_row_offsets)  CUDA_CHECK(cudaFree(d_A_row_offsets));
+    if (d_A_col_indices)  CUDA_CHECK(cudaFree(d_A_col_indices));
+    if (d_A_diag_indices) CUDA_CHECK(cudaFree(d_A_diag_indices));
+    if (d_A_values)       CUDA_CHECK(cudaFree(d_A_values));
+    if (d_elem_to_A_csr)  CUDA_CHECK(cudaFree(d_elem_to_A_csr));
 
-    // CG solver
-    CUDA_CHECK(cudaFree(delta_x));
-    CUDA_CHECK(cudaFree(d_b));
-    CUDA_CHECK(cudaFree(d_r));
-    CUDA_CHECK(cudaFree(d_p));
-    CUDA_CHECK(cudaFree(d_q));
-    CUDA_CHECK(cudaFree(d_spmv_buffer));
-    CUDA_CHECK(cudaFree(DnA));
-
+    // Linear-system buffers shared by dense CG and sparse PCG
+    if (delta_x)       CUDA_CHECK(cudaFree(delta_x));
+    if (d_b)           CUDA_CHECK(cudaFree(d_b));
+    if (d_r)           CUDA_CHECK(cudaFree(d_r));
+    if (d_p)           CUDA_CHECK(cudaFree(d_p));
+    if (d_q)           CUDA_CHECK(cudaFree(d_q));
+    if (d_z)           CUDA_CHECK(cudaFree(d_z));
+    if (d_M_inv)       CUDA_CHECK(cudaFree(d_M_inv));
+    if (d_spmv_buffer) CUDA_CHECK(cudaFree(d_spmv_buffer));
+    if (DnA)           CUDA_CHECK(cudaFree(DnA));
     // cublas handle
     if (vecP) cusparseDestroyDnVec(vecP);
     if (vecQ) cusparseDestroyDnVec(vecQ);
@@ -355,8 +359,8 @@ void ElasticitySolverT<Real>::Simulate(unsigned int total_frame, bool export_res
         << h_params.substeps << " substeps/frame." << std::endl;
 
     std::cout << "Precomputing volume and mass...." << std::endl;
-    ComputeTetInitVolume();
-    if (h_params.solverType == IMPLICIT && !csr_ready) {
+    PreCompute();
+    if ((h_params.solverType == IMPLICIT || h_params.solverType == IMPLICIT_SPARSE) && !csr_ready) {
         std::cout << "Precomputing global CSR matrix topology..." << std::endl;
         BuildGlobalCsrFromTetMesh();
         UploadGlobalCsrToDevice();
@@ -386,8 +390,13 @@ void ElasticitySolverT<Real>::SimulateFrame(bool export_result)
     if (!params_ready) {
         SetParams();
         // precompute volumes and mass.
-        ComputeTetInitVolume();
-        if(h_params.solverType == IMPLICIT)
+        PreCompute();
+        if (h_params.solverType == IMPLICIT_SPARSE && !csr_ready) {
+            BuildGlobalCsrFromTetMesh();
+            UploadGlobalCsrToDevice();
+            csr_ready = true;
+        }
+        if (h_params.solverType == IMPLICIT || h_params.solverType == IMPLICIT_SPARSE)
             InitCUDALib();
         params_ready = true;
     }
@@ -547,9 +556,10 @@ void ElasticitySolverT<Real>::InitCUDALib()
 
     CUBLAS_CHECK(cublasCreate(&cublasH));
     cusparseCreate(&cusparseH);
-    CreateCSRMat<Real>(A, d_A_row_offsets, d_A_col_indices, d_A_values, h_vertex.size() * 3, h_vertex.size() * 3, h_A_values.size());
 
     const size_t dof = h_vertex.size() * 3;
+
+    // Buffers shared by both dense CG and sparse PCG paths.
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&delta_x), dof * sizeof(Real)));
     CUDA_CHECK(cudaMemset(delta_x, 0, dof * sizeof(Real)));
 
@@ -565,26 +575,39 @@ void ElasticitySolverT<Real>::InitCUDALib()
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_q), dof * sizeof(Real)));
     CUDA_CHECK(cudaMemset(d_q, 0, dof * sizeof(Real)));
 
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&DnA), dof * dof * sizeof(Real)));
-    CUDA_CHECK(cudaMemset(DnA, 0, dof * dof * sizeof(Real)));
+    if (h_params.solverType == IMPLICIT) {
+        // Dense pipeline: explicit dense matrix backing CG.
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&DnA), dof * dof * sizeof(Real)));
+        CUDA_CHECK(cudaMemset(DnA, 0, dof * dof * sizeof(Real)));
+    } else if (h_params.solverType == IMPLICIT_SPARSE) {
+        // Sparse pipeline: cuSPARSE CSR matrix + Jacobi-preconditioned CG.
+        CreateCSRMat<Real>(A, d_A_row_offsets, d_A_col_indices, d_A_values,
+            static_cast<int>(dof), static_cast<int>(dof), static_cast<int>(h_A_values.size()));
 
-    cusparseCreateDnVec(&vecP, dof, d_p, std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F);
-    cusparseCreateDnVec(&vecQ, dof, d_q, std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F);
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_z), dof * sizeof(Real)));
+        CUDA_CHECK(cudaMemset(d_z, 0, dof * sizeof(Real)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_M_inv), dof * sizeof(Real)));
+        CUDA_CHECK(cudaMemset(d_M_inv, 0, dof * sizeof(Real)));
 
-    const Real one = static_cast<Real>(1);
-    const Real zero = static_cast<Real>(0);
-    cusparseSpMV_bufferSize(
-        cusparseH,
-        CUSPARSE_OPERATION_NON_TRANSPOSE,
-        &one,
-        A,
-        vecP,
-        &zero,
-        vecQ,
-        std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F,
-        CUSPARSE_SPMV_ALG_DEFAULT,
-        &spmv_buffer_size);
-    CUDA_CHECK(cudaMalloc(&d_spmv_buffer, spmv_buffer_size));
+        cusparseCreateDnVec(&vecP, dof, d_p, std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F);
+        cusparseCreateDnVec(&vecQ, dof, d_q, std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F);
+
+        const Real one = static_cast<Real>(1);
+        const Real zero = static_cast<Real>(0);
+        cusparseSpMV_bufferSize(
+            cusparseH,
+            CUSPARSE_OPERATION_NON_TRANSPOSE,
+            &one,
+            A,
+            vecP,
+            &zero,
+            vecQ,
+            std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F,
+            CUSPARSE_SPMV_ALG_DEFAULT,
+            &spmv_buffer_size);
+        CUDA_CHECK(cudaMalloc(&d_spmv_buffer, spmv_buffer_size));
+    }
+
     cg_max_iters = static_cast<int>(dof);
 }
 

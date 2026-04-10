@@ -10,36 +10,29 @@ using Scalar = double;
 
 int main()
 {
-	Mesh<Scalar> mesh;
+    Mesh<Scalar> mesh;
     ElasticitySolverT<Scalar> solver;
     PhysicsWorldT<Scalar> world;
     RealtimeViewer<Scalar> viewer;
 
- //   if (!loadOBJ(PROJECT_SOURCE_DIR "/assets/spot.obj", mesh)) {
- //       std::cerr << "Failed to load mesh." << std::endl;
- //       return 1;
-	//}
- //   
- //   std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
-
     auto& p = solver.GetParameters();
     p.energyType = NEOHOOKEAN;
-    p.solverType = IMPLICIT;
+    p.solverType = IMPLICIT_SPARSE;   // cuSPARSE CSR + Jacobi PCG pipeline
     p.dt = 1e-3;
     p.youngs_modulus = 1e2;
     p.poisson_ratio = 0.4;
-    p.density = 1.0;
+    p.density = 1;
     p.substeps = 1;
+
     auto& world_collision = world.GetCollisionSettings();
-    world_collision.boundary_min = p.boundary_min;
-    world_collision.boundary_max = p.boundary_max;
-    world_collision.barrier_distance = p.barrier_distance;
+    world_collision.boundary_min   = p.boundary_min;
+    world_collision.boundary_max   = p.boundary_max;
+    world_collision.barrier_distance  = p.barrier_distance;
     world_collision.barrier_stiffness = p.barrier_stiffness;
 
-    //solver.Initialize(mesh);
     solver.Initialize(PROJECT_SOURCE_DIR "/assets/spot/spot.1");
     solver.RotateVerticesAroundCentroidByEulerAngles({ Scalar(glm::radians(90.0)), Scalar(0.0), Scalar(0.0) });
-    solver.SetInitialOffset({ Scalar(0), Scalar(1), Scalar(0)});
+    solver.SetInitialOffset({ Scalar(0), Scalar(1), Scalar(0) });
     world.AddObject(solver);
 
     if (!viewer.Initialize(
@@ -61,5 +54,3 @@ int main()
 
     return 0;
 }
-
-

@@ -18,6 +18,7 @@
 #include "math/decomposition.hpp"
 #include "iostream"
 #include <cmath>
+#include <cstdio>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <cusparse.h>
@@ -581,7 +582,7 @@ __global__ void k_BoundaryCheck(
 // Kernel 4 initialise Dm_inv and rest volume for each tetrahedron
 // ─────────────────────────────────────────────────────────────────────────────
 template <typename Real>
-__global__ void k_ComputeTetInitVolume(
+__global__ void K_PreCompute(
     Tetrahedron<Real>* tets,
     const Vector<Real, 3>* __restrict__ vertex,
     Real* __restrict__ mass,
@@ -731,6 +732,217 @@ __global__ void k_integrateImplicit(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CSR-mode kernels for the IMPLICIT_SPARSE pipeline
+//
+// The CSR topology (row offsets, column indices, diag indices, element->csr
+// scatter map) is built once on the host in BuildGlobalCsrFromTetMesh and
+// uploaded to the device.  Each substep we:
+//   1. zero d_A_values
+//   2. scatter element 12x12 stiffness matrices into d_A_values
+//   3. add diagonal mass term and form b
+//   4. extract a Jacobi preconditioner (M_inv) from the diagonal entries
+//   5. solve A delta_x = b with cuSPARSE SpMV based PCG
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <typename Real>
+__global__ void k_zero_real(Real* __restrict__ data, int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    data[i] = static_cast<Real>(0);
+}
+
+template <typename Real>
+__global__ void k_computeK_csr(
+    const Tetrahedron<Real>* __restrict__ tets,
+    const mat3<Real>*        __restrict__ d_F,
+    const int*               __restrict__ elem_to_A_csr,
+    Real*                    __restrict__ A_values,
+    int numTets)
+{
+    using Mat3 = mat3<Real>;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= numTets) return;
+
+    const Tetrahedron<Real>& tet = tets[tid];
+
+    const DevParams<Real>& params = GetDevParams<Real>();
+    Real mu = params.mu;
+    Real lambda = params.lambda;
+
+    const Mat3& F = d_F[tid];
+
+    Mat3 Dm_inv = tet.Dm_inv;
+    Mat9x12<Real> pFpx = computepFpx(Dm_inv);
+    Mat9x9<Real>  hessian = -tet.volume * computeHessian(F, mu, lambda, params._alpha);
+
+    Mat12x12<Real> Ke = (transpose(pFpx) * hessian) * pFpx;
+
+    Vec4i ids = tet.verticesIndex;
+    const int base = tid * 144;
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            for (int b = 0; b < 3; ++b) {
+                for (int a = 0; a < 3; ++a) {
+                    const int local_r = 3 * x + a;
+                    const int local_c = 3 * y + b;
+                    const Real entry  = -Ke(local_r, local_c);
+                    const int csr_idx = elem_to_A_csr[base + local_r * 12 + local_c];
+                    atomicAdd(&A_values[csr_idx], entry);
+                }
+            }
+        }
+    }
+}
+
+template <typename Real>
+__global__ void k_assemble_csr(
+    Real*                          __restrict__ A_values,
+    const int*                     __restrict__ A_diag_indices,
+    Real*                          __restrict__ b,
+    const Vector<Real, 3>*         __restrict__ vn,
+    const Vector<Real, 3>*         __restrict__ force,
+    const Real*                    __restrict__ mass,
+    int numVerts)
+{
+    int vid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (vid >= numVerts) return;
+
+    const DevParams<Real>& params = GetDevParams<Real>();
+    const Real invDt  = Real(1) / params.dt;
+    const Real invDt2 = invDt * invDt;
+    const Real m      = mass[vid];
+
+    #pragma unroll
+    for (int c = 0; c < 3; ++c) {
+        const int dof = 3 * vid + c;
+        const int diagIdx = A_diag_indices[dof];
+        A_values[diagIdx] += invDt2 * m;
+        b[dof] = invDt * m * vn[vid][c] + force[vid][c];
+    }
+}
+
+template <typename Real>
+__global__ void k_extract_diag_inv(
+    const Real* __restrict__ A_values,
+    const int*  __restrict__ A_diag_indices,
+    Real*       __restrict__ M_inv,
+    int dof)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= dof) return;
+    Real d = A_values[A_diag_indices[i]];
+    M_inv[i] = (d > static_cast<Real>(1e-30) || d < -static_cast<Real>(1e-30))
+        ? (static_cast<Real>(1) / d)
+        : static_cast<Real>(1);
+}
+
+template <typename Real>
+__global__ void k_elementwise_mul(
+    const Real* __restrict__ a,
+    const Real* __restrict__ b,
+    Real*       __restrict__ out,
+    int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    out[i] = a[i] * b[i];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Jacobi-preconditioned CG using cuSPARSE SpMV.
+// Solves  A * delta_x = b   with x0 = 0  (so r0 = b).
+// ─────────────────────────────────────────────────────────────────────────────
+template <typename Real>
+static int SparsePCG(
+    cublasHandle_t        cublasH,
+    cusparseHandle_t      cusparseH,
+    cusparseSpMatDescr_t  A,
+    cusparseDnVecDescr_t  vecP,
+    cusparseDnVecDescr_t  vecQ,
+    void*                 d_spmv_buffer,
+    Real*       delta_x,
+    const Real* d_b,
+    Real*       d_r,
+    Real*       d_p,
+    Real*       d_q,
+    Real*       d_z,
+    const Real* d_M_inv,
+    int dof,
+    int maxIters,
+    Real tolerance)
+{
+    const Real zero = static_cast<Real>(0);
+    const Real one  = static_cast<Real>(1);
+    const cudaDataType valType =
+        std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F;
+
+    // x = 0  =>  r = b
+    CUDA_CHECK(cudaMemset(delta_x, 0, sizeof(Real) * static_cast<size_t>(dof)));
+    CUBLAS_CHECK(CublasOps<Real>::copy(cublasH, dof, d_b, 1, d_r, 1));
+
+    // z = M^{-1} r,  p = z
+    k_elementwise_mul<Real><<<grid1D(dof), 256>>>(d_M_inv, d_r, d_z, dof);
+    CUBLAS_CHECK(CublasOps<Real>::copy(cublasH, dof, d_z, 1, d_p, 1));
+
+    Real rz = static_cast<Real>(0);
+    CUBLAS_CHECK(CublasOps<Real>::dot(cublasH, dof, d_r, 1, d_z, 1, &rz));
+
+    Real rr = static_cast<Real>(0);
+    CUBLAS_CHECK(CublasOps<Real>::dot(cublasH, dof, d_r, 1, d_r, 1, &rr));
+    if (std::sqrt(rr) <= tolerance) {
+        return 0;
+    }
+
+    int iter = 0;
+    for (; iter < maxIters; ++iter) {
+        // q = A * p
+        CUSPARSE_CHECK(cusparseSpMV(
+            cusparseH,
+            CUSPARSE_OPERATION_NON_TRANSPOSE,
+            &one,
+            A,
+            vecP,
+            &zero,
+            vecQ,
+            valType,
+            CUSPARSE_SPMV_ALG_DEFAULT,
+            d_spmv_buffer));
+
+        Real pAp = static_cast<Real>(0);
+        CUBLAS_CHECK(CublasOps<Real>::dot(cublasH, dof, d_p, 1, d_q, 1, &pAp));
+        if (std::abs(pAp) <= static_cast<Real>(1e-20)) {
+            break;
+        }
+
+        const Real alpha    = rz / pAp;
+        const Real negAlpha = -alpha;
+        CUBLAS_CHECK(CublasOps<Real>::axpy(cublasH, dof, &alpha,    d_p, 1, delta_x, 1));
+        CUBLAS_CHECK(CublasOps<Real>::axpy(cublasH, dof, &negAlpha, d_q, 1, d_r,     1));
+
+        Real rrNew = static_cast<Real>(0);
+        CUBLAS_CHECK(CublasOps<Real>::dot(cublasH, dof, d_r, 1, d_r, 1, &rrNew));
+        if (std::sqrt(rrNew) <= tolerance) {
+            ++iter;
+            break;
+        }
+
+        // z = M^{-1} r,  rz_new = <r, z>
+        k_elementwise_mul<Real><<<grid1D(dof), 256>>>(d_M_inv, d_r, d_z, dof);
+        Real rzNew = static_cast<Real>(0);
+        CUBLAS_CHECK(CublasOps<Real>::dot(cublasH, dof, d_r, 1, d_z, 1, &rzNew));
+
+        const Real beta = rzNew / rz;
+        // p = z + beta * p
+        CUBLAS_CHECK(CublasOps<Real>::scale(cublasH, dof, &beta, d_p, 1));
+        CUBLAS_CHECK(CublasOps<Real>::axpy(cublasH, dof, &one, d_z, 1, d_p, 1));
+        rz = rzNew;
+    }
+
+    return iter;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ElasticitySolver member implementations
 // ─────────────────────────────────────────────────────────────────────────────
 template <typename Real>
@@ -768,11 +980,11 @@ void ElasticitySolverT<Real>::SetParams()
 }
 
 template <typename Real>
-void ElasticitySolverT<Real>::ComputeTetInitVolume()
+void ElasticitySolverT<Real>::PreCompute()
 {
     int numTets = static_cast<int>(h_tet.size());
 
-    k_ComputeTetInitVolume<Real><<<grid1D(numTets), 256>>>(d_tet, d_vertex, d_mass, numTets);
+    K_PreCompute<Real><<<grid1D(numTets), 256>>>(d_tet, d_vertex, d_mass, numTets);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -967,10 +1179,88 @@ void ElasticitySolverT<Real>::Step_Implicit()
 }
 
 template <typename Real>
+void ElasticitySolverT<Real>::Step_Implicit_Sparse()
+{
+    if (h_params.energyType != NEOHOOKEAN) {
+        std::cerr << "Sparse implicit solver currently only supports Neo-Hookean energy.\n";
+        exit(EXIT_FAILURE);
+    }
+    const int numTets  = static_cast<int>(h_tet.size());
+    const int numVerts = static_cast<int>(h_vertex.size());
+    const int dof      = 3 * numVerts;
+    const int nnz      = static_cast<int>(h_A_values.size());
+
+    if (cublasH == nullptr) {
+        InitCUDALib();
+    }
+
+    // Reset working buffers for this substep.
+    k_zero_real<Real><<<grid1D(nnz), 256>>>(d_A_values, nnz);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemset(d_force, 0, sizeof(Vec3) * numVerts));
+    CUDA_CHECK(cudaMemset(d_b, 0, dof * sizeof(Real)));
+
+    k_AddGravity<<<grid1D(numVerts), 256>>>(d_force, d_mass, numVerts);
+    CUDA_CHECK(cudaGetLastError());
+
+    k_ComputeForces<Real><<<grid1D(numTets), 256>>>(
+        d_tet, d_vertex, d_force, d_F, numTets);
+    CUDA_CHECK(cudaGetLastError());
+
+    // Scatter element 12x12 stiffness blocks into the global CSR values.
+    k_computeK_csr<Real><<<grid1D(numTets), 256>>>(
+        d_tet, d_F, d_elem_to_A_csr, d_A_values, numTets);
+    CUDA_CHECK(cudaGetLastError());
+
+    // Add inertia M/dt^2 to diagonal and form b.
+    k_assemble_csr<Real><<<grid1D(numVerts), 256>>>(
+        d_A_values, d_A_diag_indices, d_b, d_vertex_velocity, d_force, d_mass, numVerts);
+    CUDA_CHECK(cudaGetLastError());
+
+    // Build Jacobi preconditioner from the assembled diagonal.
+    k_extract_diag_inv<Real><<<grid1D(dof), 256>>>(
+        d_A_values, d_A_diag_indices, d_M_inv, dof);
+    CUDA_CHECK(cudaGetLastError());
+
+    int iter = SparsePCG<Real>(
+        cublasH,
+        cusparseH,
+        A,
+        vecP,
+        vecQ,
+        d_spmv_buffer,
+        delta_x,
+        d_b,
+        d_r,
+        d_p,
+        d_q,
+        d_z,
+        d_M_inv,
+        dof,
+        cg_max_iters > 0 ? cg_max_iters : dof,
+        cg_tolerance);
+
+    printf("Sparse PCG converged in %d iterations.\n", iter);
+
+    // Implicit integrate.
+    k_integrateImplicit<Real><<<grid1D(numVerts), 256>>>(
+        d_vertex, d_vertex_velocity, delta_x, numVerts);
+    CUDA_CHECK(cudaGetLastError());
+
+    // Boundary check.
+    k_BoundaryCheck<Real><<<grid1D(numVerts), 256>>>(
+        d_vertex, d_vertex_velocity, numVerts);
+    CUDA_CHECK(cudaGetLastError());
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+template <typename Real>
 void ElasticitySolverT<Real>::Step()
 {
     if (h_params.solverType == EXPLICIT) Step_Explicit();
     else if (h_params.solverType == IMPLICIT) Step_Implicit();
+    else if (h_params.solverType == IMPLICIT_SPARSE) Step_Implicit_Sparse();
     else {
         std::cerr << "Unknown solver type!\n";
         exit(EXIT_FAILURE);
@@ -980,8 +1270,8 @@ void ElasticitySolverT<Real>::Step()
 template void ElasticitySolverT<float>::SetParams();
 template void ElasticitySolverT<double>::SetParams();
 
-template void ElasticitySolverT<float>::ComputeTetInitVolume();
-template void ElasticitySolverT<double>::ComputeTetInitVolume();
+template void ElasticitySolverT<float>::PreCompute();
+template void ElasticitySolverT<double>::PreCompute();
 
 template void ElasticitySolverT<float>::SetInitialOffset(const ElasticitySolverT<float>::Vec3&);
 template void ElasticitySolverT<double>::SetInitialOffset(const ElasticitySolverT<double>::Vec3&);
@@ -997,6 +1287,9 @@ template void ElasticitySolverT<double>::Step_Explicit();
 
 template void ElasticitySolverT<float>::Step_Implicit();
 template void ElasticitySolverT<double>::Step_Implicit();
+
+template void ElasticitySolverT<float>::Step_Implicit_Sparse();
+template void ElasticitySolverT<double>::Step_Implicit_Sparse();
 
 template void ElasticitySolverT<float>::Step();
 template void ElasticitySolverT<double>::Step();

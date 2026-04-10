@@ -21,18 +21,17 @@ int main()
     }
 
     std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
-    //solver.Initialize(mesh);
-    solver.Initialize(PROJECT_SOURCE_DIR "/assets/spot/spot.1");
-    solver.RotateVerticesAroundCentroidByEulerAngles({ Scalar(0), Scalar(0.0), Scalar(0.0) });
-    solver.SetInitialOffset({ Scalar(0), Scalar(1), Scalar(0) });
+    solver.Initialize(mesh);
+    //solver.Initialize(PROJECT_SOURCE_DIR "/assets/spot/spot.1");
+    //solver.RotateVerticesAroundCentroidByEulerAngles({ Scalar(glm::radians(90.f)), Scalar(0.0), Scalar(0.0) });
+    solver.SetInitialOffset({ Scalar(0), Scalar(1.0), Scalar(0) });
     auto& p = solver.GetParameters();
     p.energyType = NEOHOOKEAN;
     p.solverType = EXPLICIT;
-    p.dt = 5e-4;
-    p.damping = 0.001;
-    p.youngs_modulus = 1e2;
+    p.dt = 1e-4;
+    p.youngs_modulus = 1e6;
     p.poisson_ratio = 0.3;
-    p.density = 1.0;
+    p.density = 1000;
     auto& world_collision = world.GetCollisionSettings();
     world_collision.boundary_min = p.boundary_min;
     world_collision.boundary_max = p.boundary_max;
@@ -51,7 +50,7 @@ int main()
     }
 
     while (!viewer.ShouldClose()) {
-        world.AdvanceFrame(false);
+        world.AdvanceFrame(true);
         viewer.UpdateFromCuda(solver.GetDeviceVertices(), solver.GetVertexCount());
         viewer.RenderFrame();
         viewer.PollEvents();

@@ -16,6 +16,7 @@ enum SolverType
 {
     EXPLICIT = 0,
     IMPLICIT = 1,
+    IMPLICIT_SPARSE = 2,
 };
 
 enum Platform
@@ -90,7 +91,7 @@ public:
 protected:
     bool DataTransfer(const std::vector<Tetrahedron<Real>>& tets, const std::vector<Vec3>& vertices);
 
-    void ComputeTetInitVolume();
+    void PreCompute();
     void BuildGlobalCsrFromTetMesh();
     void UploadGlobalCsrToDevice();
     void InitCUDALib();
@@ -99,6 +100,7 @@ protected:
     void Step();
     void Step_Explicit();
     void Step_Implicit();
+    void Step_Implicit_Sparse();
 
     void StepCPUExplicit();
     void StepCPUImplicit();
@@ -133,7 +135,10 @@ private:
     Real* d_r = nullptr;
     Real* d_p = nullptr;
     Real* d_q = nullptr;
-    Real* DnA;
+    // Sparse PCG (IMPLICIT_SPARSE) extras: Jacobi-preconditioned residual + diag inverse
+    Real* d_z = nullptr;
+    Real* d_M_inv = nullptr;
+    Real* DnA = nullptr;
     cusparseSpMatDescr_t A = nullptr;
     cusparseDnVecDescr_t vecP = nullptr;
     cusparseDnVecDescr_t vecQ = nullptr;

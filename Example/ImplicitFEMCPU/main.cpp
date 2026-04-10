@@ -14,8 +14,7 @@ int main()
     auto& p = solver.GetParameters();
     p.energyType = NEOHOOKEAN;
     p.solverType = IMPLICIT;
-    p.dt = 1.f / 60.0;
-    p.damping = 0.001;
+    p.dt = 1.f / 120.0;
     p.youngs_modulus = 1e2;
     p.poisson_ratio = 0.4;
     p.density = 1;
@@ -40,7 +39,7 @@ int main()
     world.AddObject(solver);
     
     int current_frame = 0;
-    int total_frame = 30;
+    int total_frame = 60;
     printf("Start simulation: \n");
     while (current_frame < total_frame) {
         world.AdvanceFrame(true);

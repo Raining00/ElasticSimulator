@@ -18,7 +18,7 @@ int main()
     auto& p = solver.GetParameters();
     p.energyType = NEOHOOKEAN;
     p.solverType = IMPLICIT_SPARSE;   // cuSPARSE CSR + Jacobi PCG pipeline
-    p.dt = 1e-3;
+    p.dt = 1e-2;
     p.youngs_modulus = 1e2;
     p.poisson_ratio = 0.4;
     p.density = 1;

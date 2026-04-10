@@ -190,6 +190,8 @@ struct DevParams {
     Vector<Real, 3> gravity;
     Vector<Real, 3> boundary_min;
     Vector<Real, 3> boundary_max;
+    Real barrier_distance;
+    Real barrier_stiffness;
     int energyType; // 0=STVK, 1=COROTATED, 2=NEOHOOKEAN
 };
 
@@ -298,6 +300,7 @@ __inline__ __device__ mat3<Real> P_NeoHookean(const mat3<Real>& F, Real mu, Real
 }
 
 // The return results is vectorized.
+// Reference code: https://github.com/theodorekim/HOBAKv1/blob/main/src/Geometry/TET_MESH.cpp#L197
 template <typename Real>
 __inline__ __device__
 Mat9x12<Real> computepFpx(const mat3<Real>& DmInv)
@@ -358,13 +361,13 @@ Mat9x12<Real> computepFpx(const mat3<Real>& DmInv)
 }
 
 template<typename Real>
-__inline__ __device__ StaticMatrix<Real, 9, 1> partialJpartialF(const mat3<Real>& F)
+__inline__ __device__ Vec9<Real> partialJpartialF(const mat3<Real>& F)
 {
     mat3<Real> A(cross(F.column(1), F.column(2)),
                  cross(F.column(2), F.column(0)),
                  cross(F.column(0), F.column(1)));
 
-    StaticMatrix<Real, 9, 1> pJpF(static_cast<Real>(0));
+    Vec9<Real> pJpF(static_cast<Real>(0));
     unsigned int index = 0;
     #pragma unroll 3
     for (unsigned int j = 0; j < 3; j++)
@@ -378,7 +381,7 @@ __inline__ __device__ StaticMatrix<Real, 9, 1> partialJpartialF(const mat3<Real>
 template<typename Real>
 __inline__ __device__ Mat9x9<Real> computeHessian(const mat3<Real>& F, Real mu, Real lambda, Real alpha)
 {
-    StaticMatrix<Real, 9, 1> pjpf = partialJpartialF(F);
+    Vec9<Real> pjpf = partialJpartialF(F);
     const Real I3 = mat3<Real>::determinant(F);
     const Real scale = lambda * (I3 - alpha);
     const mat3<Real> f0hat = crossProductMatrix(F.column(0)) * scale;
@@ -402,7 +405,7 @@ __inline__ __device__ Mat9x9<Real> computeHessian(const mat3<Real>& F, Real mu, 
             hessJ(i + 6, j + 3) =  f0hat(i,j);
         }
     }
-    Mat9x9<Real> I9 = mu * Mat9x9<Real>::Identity();
+    Mat9x9<Real> I9 = Mat9x9<Real>::Identity();
 
     return mu * I9 + lambda * pjpf * transpose(pjpf) + hessJ;
 }
@@ -778,7 +781,6 @@ __global__ void k_computeK_csr(
 
     Mat12x12<Real> Ke = (transpose(pFpx) * hessian) * pFpx;
 
-    Vec4i ids = tet.verticesIndex;
     const int base = tid * 144;
     for (int y = 0; y < 4; ++y) {
         for (int x = 0; x < 4; ++x) {
@@ -847,6 +849,85 @@ __global__ void k_elementwise_mul(
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     out[i] = a[i] * b[i];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Barrier-based AABB collision for the IMPLICIT_SPARSE pipeline.
+//
+// Energy per plane:  E(d) = 0.5 * k * (1/d - 1/dhat)^2
+// Force (along normal):  f = k * (1/d^3 - 1/(dhat*d^2))
+// Diagonal hessian:     h = k * (3/d^4 - 2/(dhat*d^3))
+//
+// Six AABB planes contribute independently per vertex.
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <typename Real>
+__device__ __forceinline__ void addPlaneBarrier(
+    Real signedDistance,
+    int axis,
+    Real normalSign,
+    Real barrierDist,
+    Real barrierK,
+    Vector<Real, 3>& outForce,
+    Real* outDiagHess)
+{
+    if (signedDistance >= barrierDist)
+        return;
+
+    const Real eps  = barrierDist * static_cast<Real>(1e-4);
+    const Real dMin = (eps > static_cast<Real>(1e-8)) ? eps : static_cast<Real>(1e-8);
+    const Real d    = (signedDistance > dMin) ? signedDistance : dMin;
+    const Real dhat = barrierDist;
+    const Real k    = barrierK;
+
+    const Real d2 = d * d;
+    const Real d3 = d2 * d;
+    const Real d4 = d3 * d;
+
+    const Real forceMag = k * (static_cast<Real>(1) / d3
+                             - static_cast<Real>(1) / (dhat * d2));
+    const Real hessMag  = k * (static_cast<Real>(3) / d4
+                             - static_cast<Real>(2) / (dhat * d3));
+
+    outForce[axis] += normalSign * forceMag;
+    outDiagHess[axis] += hessMag;
+}
+
+template <typename Real>
+__global__ void k_addBarrierForces(
+    const Vector<Real, 3>* __restrict__ vertex,
+    Vector<Real, 3>*       __restrict__ force,
+    Real*                  __restrict__ A_values,
+    const int*             __restrict__ A_diag_indices,
+    int numVerts)
+{
+    int vid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (vid >= numVerts) return;
+
+    const DevParams<Real>& params = GetDevParams<Real>();
+    const Vector<Real, 3> x  = vertex[vid];
+    const Real bDist = params.barrier_distance;
+    const Real bK    = params.barrier_stiffness;
+
+    Vector<Real, 3> bf{ static_cast<Real>(0), static_cast<Real>(0), static_cast<Real>(0) };
+    Real bh[3] = { static_cast<Real>(0), static_cast<Real>(0), static_cast<Real>(0) };
+
+    // 6 AABB planes: min/max for each axis
+    addPlaneBarrier<Real>(x[0] - params.boundary_min[0],  0, static_cast<Real>(+1), bDist, bK, bf, bh);
+    addPlaneBarrier<Real>(params.boundary_max[0] - x[0],  0, static_cast<Real>(-1), bDist, bK, bf, bh);
+    addPlaneBarrier<Real>(x[1] - params.boundary_min[1],  1, static_cast<Real>(+1), bDist, bK, bf, bh);
+    addPlaneBarrier<Real>(params.boundary_max[1] - x[1],  1, static_cast<Real>(-1), bDist, bK, bf, bh);
+    addPlaneBarrier<Real>(x[2] - params.boundary_min[2],  2, static_cast<Real>(+1), bDist, bK, bf, bh);
+    addPlaneBarrier<Real>(params.boundary_max[2] - x[2],  2, static_cast<Real>(-1), bDist, bK, bf, bh);
+
+    force[vid] += bf;
+
+    #pragma unroll
+    for (int c = 0; c < 3; ++c) {
+        const int dof     = 3 * vid + c;
+        const int diagIdx = A_diag_indices[dof];
+        A_values[diagIdx] += bh[c];
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -965,6 +1046,8 @@ void ElasticitySolverT<Real>::SetParams()
     dp.gravity = h_params.gravity;
     dp.boundary_min = h_params.boundary_min;
     dp.boundary_max = h_params.boundary_max;
+    dp.barrier_distance = h_params.barrier_distance;
+    dp.barrier_stiffness = h_params.barrier_stiffness;
     dp.energyType = static_cast<int>(h_params.energyType);
 
     if (h_params.energyType == NEOHOOKEAN)
@@ -1212,6 +1295,12 @@ void ElasticitySolverT<Real>::Step_Implicit_Sparse()
         d_tet, d_F, d_elem_to_A_csr, d_A_values, numTets);
     CUDA_CHECK(cudaGetLastError());
 
+    // Barrier-based AABB collision: add barrier force to d_force and
+    // barrier diagonal hessian to d_A_values (must run before k_assemble_csr).
+    k_addBarrierForces<Real><<<grid1D(numVerts), 256>>>(
+        d_vertex, d_force, d_A_values, d_A_diag_indices, numVerts);
+    CUDA_CHECK(cudaGetLastError());
+
     // Add inertia M/dt^2 to diagonal and form b.
     k_assemble_csr<Real><<<grid1D(numVerts), 256>>>(
         d_A_values, d_A_diag_indices, d_b, d_vertex_velocity, d_force, d_mass, numVerts);
@@ -1245,11 +1334,6 @@ void ElasticitySolverT<Real>::Step_Implicit_Sparse()
     // Implicit integrate.
     k_integrateImplicit<Real><<<grid1D(numVerts), 256>>>(
         d_vertex, d_vertex_velocity, delta_x, numVerts);
-    CUDA_CHECK(cudaGetLastError());
-
-    // Boundary check.
-    k_BoundaryCheck<Real><<<grid1D(numVerts), 256>>>(
-        d_vertex, d_vertex_velocity, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
     CUDA_CHECK(cudaDeviceSynchronize());

@@ -227,7 +227,7 @@ Mat9x9<Real> computeHessian(const mat3<Real>& F, Real mu, Real lambda, Real alph
         }
     }
     Mat9x9<Real> I9 = Mat9x9<Real>::Identity();
-         
+
     return mu * I9 + lambda * pjpf * transpose(pjpf) + hessJ;
 }
 

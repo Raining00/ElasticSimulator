@@ -21,17 +21,18 @@ int main()
     }
 
     std::cout << "Loaded mesh with " << mesh.vertices.size() << " vertices and " << mesh.faces.size() << " faces." << std::endl;
-    solver.Initialize(mesh);
-    //solver.Initialize(PROJECT_SOURCE_DIR "/assets/spot/spot.1");
+    //solver.Initialize(mesh);
+    solver.Initialize(PROJECT_SOURCE_DIR "/assets/ellell.1");
     //solver.RotateVerticesAroundCentroidByEulerAngles({ Scalar(glm::radians(90.f)), Scalar(0.0), Scalar(0.0) });
     solver.SetInitialOffset({ Scalar(0), Scalar(1.0), Scalar(0) });
     auto& p = solver.GetParameters();
     p.energyType = NEOHOOKEAN;
     p.solverType = EXPLICIT;
-    p.dt = 1e-4;
+    p.dt = 1e-2;
     p.youngs_modulus = 1e6;
-    p.poisson_ratio = 0.3;
+    p.poisson_ratio = 0.4;
     p.density = 1000;
+    p.substeps = 1;
     auto& world_collision = world.GetCollisionSettings();
     world_collision.boundary_min = p.boundary_min;
     world_collision.boundary_max = p.boundary_max;

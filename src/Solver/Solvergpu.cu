@@ -107,7 +107,7 @@ struct DenseCublasOps<double> {
 };
 
 template <typename Real>
-static int DensePCG(
+static int DenseCG(
     cublasHandle_t cublasH,
     const Real* DnA,
     Real* delta_x,
@@ -408,6 +408,165 @@ __inline__ __device__ Mat9x9<Real> computeHessian(const mat3<Real>& F, Real mu, 
     Mat9x9<Real> I9 = Mat9x9<Real>::Identity();
 
     return mu * I9 + lambda * pjpf * transpose(pjpf) + hessJ;
+}
+
+template<typename Real>
+__inline__ __device__ void setColumnFromMat3(Mat9x9<Real>& Q, int column, const mat3<Real>& A)
+{
+    int index = 0;
+    #pragma unroll 3
+    for (int j = 0; j < 3; ++j) {
+        #pragma unroll 3
+        for (int i = 0; i < 3; ++i, ++index) {
+            Q(index, column) = A(i, j);
+        }
+    }
+}
+
+template<typename Real>
+__inline__ __device__ void buildTwistAndFlipEigenvectors(
+    const mat3<Real>& U,
+    const mat3<Real>& V,
+    Mat9x9<Real>& Q)
+{
+    const Real invSqrt2 = static_cast<Real>(0.70710678118654752440);
+    const mat3<Real> Vt = mat3<Real>::transpose(V);
+
+    mat3<Real> T0(static_cast<Real>(0));
+    T0(1, 2) = static_cast<Real>(-1);
+    T0(2, 1) = static_cast<Real>(1);
+
+    mat3<Real> T1(static_cast<Real>(0));
+    T1(0, 2) = static_cast<Real>(1);
+    T1(2, 0) = static_cast<Real>(-1);
+
+    mat3<Real> T2(static_cast<Real>(0));
+    T2(0, 1) = static_cast<Real>(1);
+    T2(1, 0) = static_cast<Real>(-1);
+
+    mat3<Real> L0(static_cast<Real>(0));
+    L0(1, 2) = static_cast<Real>(1);
+    L0(2, 1) = static_cast<Real>(1);
+
+    mat3<Real> L1(static_cast<Real>(0));
+    L1(0, 2) = static_cast<Real>(1);
+    L1(2, 0) = static_cast<Real>(1);
+
+    mat3<Real> L2(static_cast<Real>(0));
+    L2(0, 1) = static_cast<Real>(1);
+    L2(1, 0) = static_cast<Real>(1);
+
+    setColumnFromMat3(Q, 0, (U * T0 * Vt) * invSqrt2);
+    setColumnFromMat3(Q, 1, (U * T1 * Vt) * invSqrt2);
+    setColumnFromMat3(Q, 2, (U * T2 * Vt) * invSqrt2);
+    setColumnFromMat3(Q, 3, (U * L0 * Vt) * invSqrt2);
+    setColumnFromMat3(Q, 4, (U * L1 * Vt) * invSqrt2);
+    setColumnFromMat3(Q, 5, (U * L2 * Vt) * invSqrt2);
+}
+
+template<typename Real>
+__inline__ __device__ void buildScalingEigenvectors(
+    const mat3<Real>& U,
+    const mat3<Real>& scalingQ,
+    const mat3<Real>& V,
+    Mat9x9<Real>& Q)
+{
+    const mat3<Real> Vt = mat3<Real>::transpose(V);
+
+    #pragma unroll 3
+    for (int mode = 0; mode < 3; ++mode) {
+        mat3<Real> D(static_cast<Real>(0));
+        D(0, 0) = scalingQ(0, mode);
+        D(1, 1) = scalingQ(1, mode);
+        D(2, 2) = scalingQ(2, mode);
+        setColumnFromMat3(Q, mode + 6, U * D * Vt);
+    }
+}
+
+template<typename Real>
+__inline__ __device__ void symmetricEigenDecomposition(
+    mat3<Real> A,
+    mat3<Real>& eigenvectors,
+    Vector<Real, 3>& eigenvalues)
+{
+    Real q[4];
+    jacobiEigenanlysis(A(0, 0), A(1, 0), A(1, 1), A(2, 0), A(2, 1), A(2, 2), q);
+    quatToMat3(
+        q,
+        eigenvectors[0], eigenvectors[3], eigenvectors[6],
+        eigenvectors[1], eigenvectors[4], eigenvectors[7],
+        eigenvectors[2], eigenvectors[5], eigenvectors[8]);
+
+    eigenvalues[0] = A(0, 0);
+    eigenvalues[1] = A(1, 1);
+    eigenvalues[2] = A(2, 2);
+}
+
+template<typename Real>
+__inline__ __device__ Mat9x9<Real> computeClampedHessian(const mat3<Real>& F, Real mu, Real lambda, Real alpha)
+{
+    mat3<Real> U;
+    mat3<Real> Sigma;
+    mat3<Real> V;
+    computeSVD(F, U, Sigma, V);
+
+    const Real s0 = Sigma(0, 0);
+    const Real s1 = Sigma(1, 1);
+    const Real s2 = Sigma(2, 2);
+    const Real J = s0 * s1 * s2;
+
+    Real eigenvalues[9];
+    const Real front = lambda * (J - alpha);
+    eigenvalues[0] = front * s0 + mu;
+    eigenvalues[1] = front * s1 + mu;
+    eigenvalues[2] = front * s2 + mu;
+    eigenvalues[3] = -front * s0 + mu;
+    eigenvalues[4] = -front * s1 + mu;
+    eigenvalues[5] = -front * s2 + mu;
+
+    mat3<Real> A(static_cast<Real>(0));
+    const Real s0s0 = s0 * s0;
+    const Real s1s1 = s1 * s1;
+    const Real s2s2 = s2 * s2;
+    A(0, 0) = mu + lambda * s1s1 * s2s2;
+    A(1, 1) = mu + lambda * s0s0 * s2s2;
+    A(2, 2) = mu + lambda * s0s0 * s1s1;
+
+    const Real frontOffDiag = lambda * (static_cast<Real>(2) * J - alpha);
+    A(0, 1) = frontOffDiag * s2;
+    A(0, 2) = frontOffDiag * s1;
+    A(1, 2) = frontOffDiag * s0;
+    A(1, 0) = A(0, 1);
+    A(2, 0) = A(0, 2);
+    A(2, 1) = A(1, 2);
+
+    mat3<Real> scalingQ;
+    Vector<Real, 3> scalingEigenvalues;
+    symmetricEigenDecomposition(A, scalingQ, scalingEigenvalues);
+    eigenvalues[6] = scalingEigenvalues[0];
+    eigenvalues[7] = scalingEigenvalues[1];
+    eigenvalues[8] = scalingEigenvalues[2];
+
+    Mat9x9<Real> eigenvectors(static_cast<Real>(0));
+    buildTwistAndFlipEigenvectors(U, V, eigenvectors);
+    buildScalingEigenvectors(U, scalingQ, V, eigenvectors);
+
+    Mat9x9<Real> hessian(static_cast<Real>(0));
+    #pragma unroll 9
+    for (int mode = 0; mode < 9; ++mode) {
+        const Real clampedEigenvalue =
+            eigenvalues[mode] > static_cast<Real>(0) ? eigenvalues[mode] : static_cast<Real>(0);
+
+        #pragma unroll 9
+        for (int i = 0; i < 9; ++i) {
+            #pragma unroll 9
+            for (int j = 0; j < 9; ++j) {
+                hessian(i, j) += clampedEigenvalue * eigenvectors(i, mode) * eigenvectors(j, mode);
+            }
+        }
+    }
+
+    return hessian;
 }
 
 template <typename Real>
@@ -777,7 +936,7 @@ __global__ void k_computeK_csr(
 
     Mat3 Dm_inv = tet.Dm_inv;
     Mat9x12<Real> pFpx = computepFpx(Dm_inv);
-    Mat9x9<Real>  hessian = -tet.volume * computeHessian(F, mu, lambda, params._alpha);
+    Mat9x9<Real>  hessian = -tet.volume * computeClampedHessian(F, mu, lambda, params._alpha);
 
     Mat12x12<Real> Ke = (transpose(pFpx) * hessian) * pFpx;
 
@@ -955,8 +1114,8 @@ static int SparsePCG(
 {
     const Real zero = static_cast<Real>(0);
     const Real one  = static_cast<Real>(1);
-    const cudaDataType valType =
-        std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F;
+    //const cudaDataType valType =
+    //    std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F;
 
     // x = 0  =>  r = b
     CUDA_CHECK(cudaMemset(delta_x, 0, sizeof(Real) * static_cast<size_t>(dof)));
@@ -978,7 +1137,7 @@ static int SparsePCG(
     int iter = 0;
     for (; iter < maxIters; ++iter) {
         // q = A * p
-        CUSPARSE_CHECK(cusparseSpMV(
+        CUSPARSE_CHECK(CusparseOps<Real>::SpMV(
             cusparseH,
             CUSPARSE_OPERATION_NON_TRANSPOSE,
             &one,
@@ -986,7 +1145,6 @@ static int SparsePCG(
             vecP,
             &zero,
             vecQ,
-            valType,
             CUSPARSE_SPMV_ALG_DEFAULT,
             d_spmv_buffer));
 
@@ -1234,7 +1392,7 @@ void ElasticitySolverT<Real>::Step_Implicit()
         DnA, d_b, d_vertex_velocity, d_force, d_mass, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
-    int iter = DensePCG<Real>(
+    int iter = DenseCG<Real>(
         cublasH,
         DnA,
         delta_x,
@@ -1246,7 +1404,7 @@ void ElasticitySolverT<Real>::Step_Implicit()
         cg_max_iters > 0 ? cg_max_iters : dof,
         cg_tolerance);
     
-    printf("PCG converged in %d iterations.\n", iter);
+    printf("CG converged in %d iterations.\n", iter);
 
     // Implicit integrate.
     k_integrateImplicit<Real><<<grid1D(numVerts), 256>>>(

@@ -256,6 +256,9 @@ ElasticitySolverT<Real>::~ElasticitySolverT()
     if (d_q)           CUDA_CHECK(cudaFree(d_q));
     if (d_z)           CUDA_CHECK(cudaFree(d_z));
     if (d_M_inv)       CUDA_CHECK(cudaFree(d_M_inv));
+    if (d_x_tilde)     CUDA_CHECK(cudaFree(d_x_tilde));
+    if (d_x0)          CUDA_CHECK(cudaFree(d_x0));
+    if (d_energy)      CUDA_CHECK(cudaFree(d_energy));
     if (d_spmv_buffer) CUDA_CHECK(cudaFree(d_spmv_buffer));
     if (DnA)           CUDA_CHECK(cudaFree(DnA));
     // cublas handle
@@ -588,6 +591,12 @@ void ElasticitySolverT<Real>::InitCUDALib()
         CUDA_CHECK(cudaMemset(d_z, 0, dof * sizeof(Real)));
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_M_inv), dof * sizeof(Real)));
         CUDA_CHECK(cudaMemset(d_M_inv, 0, dof * sizeof(Real)));
+
+        // Line search buffers
+        const size_t numVerts = h_vertex.size();
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_x_tilde), numVerts * sizeof(Vec3)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_x0), numVerts * sizeof(Vec3)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_energy), sizeof(Real)));
 
         cusparseCreateDnVec(&vecP, dof, d_p, std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F);
         cusparseCreateDnVec(&vecQ, dof, d_q, std::is_same<Real, float>::value ? CUDA_R_32F : CUDA_R_64F);

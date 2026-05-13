@@ -19,9 +19,9 @@ int main()
     p.energyType = NEOHOOKEAN;
     p.solverType = IMPLICIT_SPARSE;   // cuSPARSE CSR + Jacobi PCG pipeline
     p.dt = 1e-2;
-    p.youngs_modulus = 1e2;
+    p.youngs_modulus = 1e6;
     p.poisson_ratio = 0.4;
-    p.density = 1;
+    p.density = 1000;
     p.substeps = 1;
 
     auto& world_collision = world.GetCollisionSettings();

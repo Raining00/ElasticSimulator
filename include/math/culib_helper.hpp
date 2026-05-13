@@ -111,6 +111,23 @@ struct CublasApi<float>
     {
         return cublasScopy(handle, n, x, incx, y, incy);
     }
+
+    static cublasStatus_t gemv(
+        cublasHandle_t handle,
+        cublasOperation_t trans,
+        int m,
+        int n,
+        const float* alpha,
+        const float* A,
+        int lda,
+        const float* x,
+        int incx,
+        const float* beta,
+        float* y,
+        int incy)
+    {
+        return cublasSgemv(handle, trans, m, n, alpha, A, lda, x, incx, beta, y, incy);
+    }
 };
 
 template <>
@@ -171,6 +188,23 @@ struct CublasApi<double>
         int incy)
     {
         return cublasDcopy(handle, n, x, incx, y, incy);
+    }
+    
+    static cublasStatus_t gemv(
+        cublasHandle_t handle,
+        cublasOperation_t trans,
+        int m,
+        int n,
+        const double* alpha,
+        const double* A,
+        int lda,
+        const double* x,
+        int incx,
+        const double* beta,
+        double* y,
+        int incy)
+    {
+        return cublasDgemv(handle, trans, m, n, alpha, A, lda, x, incx, beta, y, incy);
     }
 };
 

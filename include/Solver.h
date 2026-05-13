@@ -138,6 +138,10 @@ private:
     // Sparse PCG (IMPLICIT_SPARSE) extras: Jacobi-preconditioned residual + diag inverse
     Real* d_z = nullptr;
     Real* d_M_inv = nullptr;
+    // Line search buffers (IMPLICIT_SPARSE only)
+    Vec3* d_x_tilde = nullptr;   // inertial target: x_n + dt * v_n
+    Vec3* d_x0 = nullptr;        // saved positions at start of Newton step
+    Real* d_energy = nullptr;    // single-element device buffer for energy accumulation
     Real* DnA = nullptr;
     cusparseSpMatDescr_t A = nullptr;
     cusparseDnVecDescr_t vecP = nullptr;

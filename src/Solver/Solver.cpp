@@ -219,7 +219,11 @@ void ElasticitySolverT<Real>::PrintInfo() const
     std::cout << "Substeps: " << h_params.substeps << std::endl;
     std::cout << "Lambda: " << h_params.lambda << std::endl;
     std::cout << "Mu: " << h_params.mu << std::endl;
-    std::cout << "Energy Type: " << (h_params.energyType == STVK ? "STVK" : (h_params.energyType == COROTATED ? "Corotated" : "NeoHookean")) << std::endl;
+    const char* energyName = "NeoHookean";
+    if (h_params.energyType == STVK) energyName = "STVK";
+    else if (h_params.energyType == COROTATED) energyName = "Corotated";
+    else if (h_params.energyType == ARAP) energyName = "ARAP";
+    std::cout << "Energy Type: " << energyName << std::endl;
     std::cout << "Gravity: (" << h_params.gravity.x << ", " << h_params.gravity.y << ", " << h_params.gravity.z << ")" << std::endl;
     std::cout << "Boundary Min: (" << h_params.boundary_min.x << ", " << h_params.boundary_min.y << ", " << h_params.boundary_min.z << ")" << std::endl;
     std::cout << "Boundary Max: (" << h_params.boundary_max.x << ", " << h_params.boundary_max.y << ", " << h_params.boundary_max.z << ")" << std::endl;

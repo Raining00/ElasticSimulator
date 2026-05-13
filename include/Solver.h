@@ -9,7 +9,8 @@ enum EnergyType
 {
     STVK = 0,
     COROTATED = 1,
-    NEOHOOKEAN = 2
+    NEOHOOKEAN = 2,
+    ARAP = 3
 };
 
 enum SolverType

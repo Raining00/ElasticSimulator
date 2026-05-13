@@ -14,6 +14,7 @@
  */
 
 #include "Solver.h"
+#include "Solver/FemEnergy.cuh"
 #include "math/culib_helper.hpp"
 #include "math/decomposition.hpp"
 #include "iostream"
@@ -192,7 +193,7 @@ struct DevParams {
     Vector<Real, 3> boundary_max;
     Real barrier_distance;
     Real barrier_stiffness;
-    int energyType; // 0=STVK, 1=COROTATED, 2=NEOHOOKEAN
+    int energyType; // 0=STVK, 1=COROTATED, 2=NEOHOOKEAN, 3=ARAP
 };
 
 __constant__ DevParams<float> c_params_f;
@@ -246,59 +247,13 @@ __device__ __forceinline__ mat3<Real> computeF(
 // ---------- StVK ----------
 // E = 0.5*(F'F - I)
 // P = F*(2*mu*E + lambda*tr(E)*I)
-template <typename Real>
-__inline__ __device__ mat3<Real> P_STVK(const mat3<Real>& F, Real mu, Real lambda)
-{
-    using Mat3 = mat3<Real>;
-    Mat3 FtF = Mat3::multiplyAtB(F, F); // F^T * F
-    Mat3 E = (FtF - Mat3(static_cast<Real>(1))) * static_cast<Real>(0.5); // Green strain
-    Real trE = Mat3::trace(E);
-    Mat3 S = E * (static_cast<Real>(2) * mu) + Mat3(lambda * trE); // 2nd PK
-    return F * S;
-}
-
 // ---------- Corotated ----------
 // F = R * S  (polar decomp)
 // P = 2*mu*(F - R) + lambda*(J-1)*J * F^{-T}
 // Simplified linear form: P = 2*mu*(F-R) + lambda*tr(S-I)*R
-template <typename Real>
-__inline__ __device__ mat3<Real> P_Corotated(const mat3<Real>& F, Real mu, Real lambda)
-{
-    using Mat3 = mat3<Real>;
-    Mat3 R;
-    computePD<Real>(F, R);
-
-    // tr(R^T F - I) = tr(S - I)  where S is symmetric part
-    Mat3 RtF = Mat3::multiplyAtB(R, F);
-    Real tr = Mat3::trace(RtF) - static_cast<Real>(3);
-
-    return (F - R) * (static_cast<Real>(2) * mu) + R * (lambda * tr);
-}
-
 // ---------- Stable Neo-Hookean (Smith et al. 2018) ----------
 // Psi = mu/2*(I_C - 3) - mu*log(J) + lambda/2*(J-1)^2
 // P   = mu*(F - F^{-T}) + lambda*(J-1)*J*F^{-T}
-template <typename Real>
-__inline__ __device__ mat3<Real> P_NeoHookean(const mat3<Real>& F, Real mu, Real lambda, Real alpha)
-{
-    using Mat3 = mat3<Real>;
-    using Vec3 = Vector<Real, 3>;
-    Real J = Mat3::determinant(F);
-    // Clamp J to avoid singularity
-    J = (J > static_cast<Real>(1e-4)) ? J : static_cast<Real>(1e-4);
-
-    // Mat3 Finvt = Mat3::transpose(Mat3::inverse(F));
-    Vec3 col0 = F.column(0);
-    Vec3 col1 = F.column(1);
-    Vec3 col2 = F.column(2);
-    Mat3 pJpF = Mat3(cross(col1, col2), cross(col2, col0), cross(col0, col1));
-
-    // mu*(F - F^{-T}) + lambda*(J-1)*J * F^{-T}
-    // Mat3 P = (F - Finvt) * mu + Finvt * (lambda * (J - static_cast<Real>(1)) * J);
-    Mat3 P = mu * F + lambda * (J -alpha) * pJpF;
-    return P;
-}
-
 // The return results is vectorized.
 // Reference code: https://github.com/theodorekim/HOBAKv1/blob/main/src/Geometry/TET_MESH.cpp#L197
 template <typename Real>
@@ -360,215 +315,6 @@ Mat9x12<Real> computepFpx(const mat3<Real>& DmInv)
     return PFPu;
 }
 
-template<typename Real>
-__inline__ __device__ Vec9<Real> partialJpartialF(const mat3<Real>& F)
-{
-    mat3<Real> A(cross(F.column(1), F.column(2)),
-                 cross(F.column(2), F.column(0)),
-                 cross(F.column(0), F.column(1)));
-
-    Vec9<Real> pJpF(static_cast<Real>(0));
-    unsigned int index = 0;
-    #pragma unroll 3
-    for (unsigned int j = 0; j < 3; j++)
-        #pragma unroll 3
-        for (unsigned int i = 0; i < 3; i++, index++)
-            pJpF(index, 0) = A(i,j);
-
-    return pJpF;
-}
-
-template<typename Real>
-__inline__ __device__ Mat9x9<Real> computeHessian(const mat3<Real>& F, Real mu, Real lambda, Real alpha)
-{
-    Vec9<Real> pjpf = partialJpartialF(F);
-    const Real I3 = mat3<Real>::determinant(F);
-    const Real scale = lambda * (I3 - alpha);
-    const mat3<Real> f0hat = crossProductMatrix(F.column(0)) * scale;
-    const mat3<Real> f1hat = crossProductMatrix(F.column(1)) * scale;
-    const mat3<Real> f2hat = crossProductMatrix(F.column(2)) * scale;
-
-    Mat9x9<Real> hessJ(static_cast<Real>(0));
-    #pragma unroll 3
-    for (int j = 0; j < 3; j++)
-    {
-        #pragma unroll 3
-        for (int i = 0; i < 3; i++)
-        {
-            hessJ(i, j + 3) = Real(-1) * f2hat(i,j);
-            hessJ(i + 3, j) =  f2hat(i,j);
-
-            hessJ(i, j + 6) =  f1hat(i,j);
-            hessJ(i + 6, j) = Real(- 1) * f1hat(i, j);
-
-            hessJ(i + 3, j + 6) = Real(-1) * f0hat(i,j);
-            hessJ(i + 6, j + 3) =  f0hat(i,j);
-        }
-    }
-    Mat9x9<Real> I9 = Mat9x9<Real>::Identity();
-
-    return mu * I9 + lambda * pjpf * transpose(pjpf) + hessJ;
-}
-
-template<typename Real>
-__inline__ __device__ void setColumnFromMat3(Mat9x9<Real>& Q, int column, const mat3<Real>& A)
-{
-    int index = 0;
-    #pragma unroll 3
-    for (int j = 0; j < 3; ++j) {
-        #pragma unroll 3
-        for (int i = 0; i < 3; ++i, ++index) {
-            Q(index, column) = A(i, j);
-        }
-    }
-}
-
-template<typename Real>
-__inline__ __device__ void buildTwistAndFlipEigenvectors(
-    const mat3<Real>& U,
-    const mat3<Real>& V,
-    Mat9x9<Real>& Q)
-{
-    const Real invSqrt2 = static_cast<Real>(0.70710678118654752440);
-    const mat3<Real> Vt = mat3<Real>::transpose(V);
-
-    mat3<Real> T0(static_cast<Real>(0));
-    T0(1, 2) = static_cast<Real>(-1);
-    T0(2, 1) = static_cast<Real>(1);
-
-    mat3<Real> T1(static_cast<Real>(0));
-    T1(0, 2) = static_cast<Real>(1);
-    T1(2, 0) = static_cast<Real>(-1);
-
-    mat3<Real> T2(static_cast<Real>(0));
-    T2(0, 1) = static_cast<Real>(1);
-    T2(1, 0) = static_cast<Real>(-1);
-
-    mat3<Real> L0(static_cast<Real>(0));
-    L0(1, 2) = static_cast<Real>(1);
-    L0(2, 1) = static_cast<Real>(1);
-
-    mat3<Real> L1(static_cast<Real>(0));
-    L1(0, 2) = static_cast<Real>(1);
-    L1(2, 0) = static_cast<Real>(1);
-
-    mat3<Real> L2(static_cast<Real>(0));
-    L2(0, 1) = static_cast<Real>(1);
-    L2(1, 0) = static_cast<Real>(1);
-
-    setColumnFromMat3(Q, 0, (U * T0 * Vt) * invSqrt2);
-    setColumnFromMat3(Q, 1, (U * T1 * Vt) * invSqrt2);
-    setColumnFromMat3(Q, 2, (U * T2 * Vt) * invSqrt2);
-    setColumnFromMat3(Q, 3, (U * L0 * Vt) * invSqrt2);
-    setColumnFromMat3(Q, 4, (U * L1 * Vt) * invSqrt2);
-    setColumnFromMat3(Q, 5, (U * L2 * Vt) * invSqrt2);
-}
-
-template<typename Real>
-__inline__ __device__ void buildScalingEigenvectors(
-    const mat3<Real>& U,
-    const mat3<Real>& scalingQ,
-    const mat3<Real>& V,
-    Mat9x9<Real>& Q)
-{
-    const mat3<Real> Vt = mat3<Real>::transpose(V);
-
-    #pragma unroll 3
-    for (int mode = 0; mode < 3; ++mode) {
-        mat3<Real> D(static_cast<Real>(0));
-        D(0, 0) = scalingQ(0, mode);
-        D(1, 1) = scalingQ(1, mode);
-        D(2, 2) = scalingQ(2, mode);
-        setColumnFromMat3(Q, mode + 6, U * D * Vt);
-    }
-}
-
-template<typename Real>
-__inline__ __device__ void symmetricEigenDecomposition(
-    mat3<Real> A,
-    mat3<Real>& eigenvectors,
-    Vector<Real, 3>& eigenvalues)
-{
-    Real q[4];
-    jacobiEigenanlysis(A(0, 0), A(1, 0), A(1, 1), A(2, 0), A(2, 1), A(2, 2), q);
-    quatToMat3(
-        q,
-        eigenvectors[0], eigenvectors[3], eigenvectors[6],
-        eigenvectors[1], eigenvectors[4], eigenvectors[7],
-        eigenvectors[2], eigenvectors[5], eigenvectors[8]);
-
-    eigenvalues[0] = A(0, 0);
-    eigenvalues[1] = A(1, 1);
-    eigenvalues[2] = A(2, 2);
-}
-
-template<typename Real>
-__inline__ __device__ Mat9x9<Real> computeClampedHessian(const mat3<Real>& F, Real mu, Real lambda, Real alpha)
-{
-    mat3<Real> U;
-    mat3<Real> Sigma;
-    mat3<Real> V;
-    computeSVD(F, U, Sigma, V);
-
-    const Real s0 = Sigma(0, 0);
-    const Real s1 = Sigma(1, 1);
-    const Real s2 = Sigma(2, 2);
-    const Real J = s0 * s1 * s2;
-
-    Real eigenvalues[9];
-    const Real front = lambda * (J - alpha);
-    eigenvalues[0] = front * s0 + mu;
-    eigenvalues[1] = front * s1 + mu;
-    eigenvalues[2] = front * s2 + mu;
-    eigenvalues[3] = -front * s0 + mu;
-    eigenvalues[4] = -front * s1 + mu;
-    eigenvalues[5] = -front * s2 + mu;
-
-    mat3<Real> A(static_cast<Real>(0));
-    const Real s0s0 = s0 * s0;
-    const Real s1s1 = s1 * s1;
-    const Real s2s2 = s2 * s2;
-    A(0, 0) = mu + lambda * s1s1 * s2s2;
-    A(1, 1) = mu + lambda * s0s0 * s2s2;
-    A(2, 2) = mu + lambda * s0s0 * s1s1;
-
-    const Real frontOffDiag = lambda * (static_cast<Real>(2) * J - alpha);
-    A(0, 1) = frontOffDiag * s2;
-    A(0, 2) = frontOffDiag * s1;
-    A(1, 2) = frontOffDiag * s0;
-    A(1, 0) = A(0, 1);
-    A(2, 0) = A(0, 2);
-    A(2, 1) = A(1, 2);
-
-    mat3<Real> scalingQ;
-    Vector<Real, 3> scalingEigenvalues;
-    symmetricEigenDecomposition(A, scalingQ, scalingEigenvalues);
-    eigenvalues[6] = scalingEigenvalues[0];
-    eigenvalues[7] = scalingEigenvalues[1];
-    eigenvalues[8] = scalingEigenvalues[2];
-
-    Mat9x9<Real> eigenvectors(static_cast<Real>(0));
-    buildTwistAndFlipEigenvectors(U, V, eigenvectors);
-    buildScalingEigenvectors(U, scalingQ, V, eigenvectors);
-
-    Mat9x9<Real> hessian(static_cast<Real>(0));
-    #pragma unroll 9
-    for (int mode = 0; mode < 9; ++mode) {
-        const Real clampedEigenvalue =
-            eigenvalues[mode] > static_cast<Real>(0) ? eigenvalues[mode] : static_cast<Real>(0);
-
-        #pragma unroll 9
-        for (int i = 0; i < 9; ++i) {
-            #pragma unroll 9
-            for (int j = 0; j < 9; ++j) {
-                hessian(i, j) += clampedEigenvalue * eigenvectors(i, mode) * eigenvectors(j, mode);
-            }
-        }
-    }
-
-    return hessian;
-}
-
 template <typename Real>
 __global__ void k_AddGravity(
     Vector<Real, 3>* __restrict__ force,
@@ -617,15 +363,10 @@ __global__ void k_ComputeForces(
     d_F[tid] = F;
 
     // ─── First Piola-Kirchhoff stress ──────────────────────────────────────
-    Mat3 P;
     const DevParams<Real>& params = GetDevParams<Real>();
-    int etype = params.energyType;
     Real mu = params.mu;
     Real lambda = params.lambda;
-
-    if (etype == 0)      P = P_STVK<Real>(F, mu, lambda);
-    else if (etype == 1) P = P_Corotated<Real>(F, mu, lambda);
-    else                 P = P_NeoHookean<Real>(F, mu, lambda, params._alpha);
+    Mat3 P = computeStressForEnergy(F, mu, lambda, params._alpha, params.energyType);
 
     // ─── Nodal forces from the stress ─────────────────────────────────────
     // f = -V0 * P * Dm^{-T}   (distributed to the four nodes)
@@ -826,7 +567,8 @@ __global__ void k_computeK(
     //Compute dF / dx = (dD_s / dx) * (Dm_Inv)
     Mat3 Dm_inv = tet.Dm_inv;
     Mat9x12<Real> pFpx = computepFpx(Dm_inv);
-    Mat9x9<Real>  hessian = -tet.volume * computeHessian(F, mu, lambda, params._alpha);
+    Mat9x9<Real>  hessian = -tet.volume * computeEnergyHessian(
+        F, mu, lambda, params._alpha, params.energyType, false);
 
     Mat12x12<Real> Ke = (transpose(pFpx) * hessian) * pFpx;
     
@@ -936,7 +678,8 @@ __global__ void k_computeK_csr(
 
     Mat3 Dm_inv = tet.Dm_inv;
     Mat9x12<Real> pFpx = computepFpx(Dm_inv);
-    Mat9x9<Real>  hessian = -tet.volume * computeClampedHessian(F, mu, lambda, params._alpha);
+    Mat9x9<Real>  hessian = -tet.volume * computeEnergyHessian(
+        F, mu, lambda, params._alpha, params.energyType, true);
 
     Mat12x12<Real> Ke = (transpose(pFpx) * hessian) * pFpx;
 
@@ -1360,8 +1103,8 @@ void ElasticitySolverT<Real>::Step_Explicit()
 template <typename Real>
 void ElasticitySolverT<Real>::Step_Implicit()
 {
-    if (h_params.energyType != NEOHOOKEAN) {
-        std::cerr << "Implicit solver currently only supports Neo-Hookean energy.\n";
+    if (h_params.energyType == COROTATED) {
+        std::cerr << "Implicit solver supports STVK, Neo-Hookean, and ARAP energy. Use ARAP instead of COROTATED for SVD-based implicit stiffness.\n";
         exit(EXIT_FAILURE);
     }
     const int numTets = static_cast<int>(h_tet.size());
@@ -1422,8 +1165,8 @@ void ElasticitySolverT<Real>::Step_Implicit()
 template <typename Real>
 void ElasticitySolverT<Real>::Step_Implicit_Sparse()
 {
-    if (h_params.energyType != NEOHOOKEAN) {
-        std::cerr << "Sparse implicit solver currently only supports Neo-Hookean energy.\n";
+    if (h_params.energyType == COROTATED) {
+        std::cerr << "Sparse implicit solver supports STVK, Neo-Hookean, and ARAP energy. Use ARAP instead of COROTATED for SVD-based implicit stiffness.\n";
         exit(EXIT_FAILURE);
     }
     const int numTets  = static_cast<int>(h_tet.size());

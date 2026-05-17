@@ -44,8 +44,7 @@ ElasticSimulator/
 |-- extern/                     # git submodules: tetgen, glm, glfw
 |-- assets/                     # Example meshes and TetGen files
 |-- output/                     # Default OBJ export directory
-|-- python/                     # Python reference/prototype scripts
-`-- blender/                    # Blender helper addon
+`-- python/                     # Python reference/prototype scripts
 ```
 
 ## Requirements

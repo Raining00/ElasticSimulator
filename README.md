@@ -9,31 +9,43 @@ viewer for inspecting the results.
 
 - Tetrahedral FEM elasticity with three energy models: StVK, Corotated, Stable Neo-Hookean.
 - Multiple solver pipelines:
-  - **Explicit FEM** — CPU and CUDA backends.
-  - **Implicit FEM (dense)** — CUDA backend, dense matrix + cuBLAS CG.
-  - **Implicit FEM (sparse)** — CUDA backend, cuSPARSE CSR matrix + Jacobi-preconditioned CG.
+  - **Explicit FEM** - CPU and CUDA backends.
+  - **Implicit FEM (dense)** - CUDA backend, dense matrix + cuBLAS CG.
+  - **Implicit FEM (sparse)** - CUDA backend, cuSPARSE CSR matrix + Jacobi-preconditioned CG.
 - Tetrahedralization of triangle meshes via TetGen, or direct loading of `.node`/`.ele` files.
 - Real-time OpenGL viewer with CUDA interop for displaying the deforming surface mesh.
+- Solver-level kinematic cylinder constraints for simple driven deformation examples.
 - Single- and double-precision support (`float` / `double`) through templated solvers.
 
 ## Repository layout
 
 ```
 ElasticSimulator/
-├── CMakeLists.txt
-├── include/                    # Public headers (Solver, math, render, ...)
-├── src/
-│   ├── Solver/                 # Solver.cpp, Solvergpu.cu, Solvercpu.cpp
-│   └── Render/                 # Real-time viewer + CUDA interop
-├── Example/                    # Self-contained example apps
-│   ├── FEMExplicitCPU/
-│   ├── FEMExplicitGPU/
-│   ├── ImplicitFEMCPU/
-│   ├── ImplicitFEMGPU/         # dense CG
-│   └── ImplicitFEMGPUSparse/   # cuSPARSE CSR + Jacobi PCG
-├── extern/                     # git submodules: tetgen, glm, glfw
-├── assets/                     # Example meshes (e.g. spot)
-└── output/                     # Default OBJ export directory
+|-- CMakeLists.txt
+|-- include/                    # Public headers: solver, mesh, math, render
+|   |-- Solver.h                # Main solver API
+|   |-- BaseStructure.hpp       # Mesh and basic geometry structures
+|   |-- MeshToTet.hpp           # OBJ loading, TetGen conversion, OBJ export
+|   |-- Solver/                 # CUDA FEM energy helpers
+|   |-- math/                   # Small vector/matrix/math utilities
+|   `-- render/                 # Viewer headers
+|-- src/
+|   |-- Solver/                 # Solver.cpp, Solvergpu.cu, Solvercpu.cpp
+|   |-- Render/                 # Real-time viewer + CUDA interop
+|   `-- MeshToTet.cpp
+|-- Example/                    # Self-contained solver examples
+|   |-- ArmBendGPU/             # Kinematic-cylinder arm bending demo
+|   |-- FEMExplicitCPU/
+|   |-- FEMExplicitGPU/
+|   |-- ImplicitFEMCPU/
+|   |-- ImplicitFEMGPU/         # Dense CG
+|   |-- ImplicitFEMGPUSparse/   # cuSPARSE CSR + Jacobi PCG
+|   `-- sparseCG/               # Standalone sparse CG test/example
+|-- extern/                     # git submodules: tetgen, glm, glfw
+|-- assets/                     # Example meshes and TetGen files
+|-- output/                     # Default OBJ export directory
+|-- python/                     # Python reference/prototype scripts
+`-- blender/                    # Blender helper addon
 ```
 
 ## Requirements
@@ -105,13 +117,15 @@ build\bin\Release\ImplicitFEM_GPU_Sparse.exe
 
 Available examples:
 
-| Example                  | Solver pipeline                                       |
-| ------------------------ | ----------------------------------------------------- |
-| `FEMExplicitCPU`         | Explicit FEM, CPU                                     |
-| `FEMExplicitGPU`         | Explicit FEM, CUDA                                    |
-| `ImplicitFEMCPU`         | Implicit FEM, CPU                                     |
-| `ImplicitFEM_GPU`        | Implicit FEM, CUDA, dense matrix + CG                 |
-| `ImplicitFEM_GPU_Sparse` | Implicit FEM, CUDA, cuSPARSE CSR + Jacobi PCG         |
+| Directory | Executable target | What it demonstrates |
+| --------- | ----------------- | -------------------- |
+| `ArmBendGPU` | `ArmBend_GPU` | GPU implicit-sparse arm bending with solver-level kinematic cylinders |
+| `FEMExplicitCPU` | `ExplicitFEM_CPU` | Explicit FEM on the CPU |
+| `FEMExplicitGPU` | `ExplicitFEM_GPU` | Explicit FEM on CUDA with the real-time viewer |
+| `ImplicitFEMCPU` | `ImplicitFEM_CPU` | Implicit FEM on the CPU |
+| `ImplicitFEMGPU` | `ImplicitFEM_GPU` | Implicit FEM on CUDA using a dense matrix + CG |
+| `ImplicitFEMGPUSparse` | `ImplicitFEM_GPU_Sparse` | Implicit FEM on CUDA using cuSPARSE CSR + Jacobi PCG |
+| `sparseCG` | `sparseCG` | Small sparse conjugate-gradient test/example |
 
 Simulated frames can be exported as `.obj` files into the `output/` directory
 by passing `true` to `solver.AdvanceFrame(...)` (see `Example/FEMExplicitGPU/main.cpp`).
@@ -131,13 +145,13 @@ loadOBJ("path/to/mesh.obj", mesh);
 
 ElasticitySolverT<Scalar> solver;
 auto& p = solver.GetParameters();
-p.energyType    = NEOHOOKEAN;
-p.solverType    = IMPLICIT_SPARSE;   // or IMPLICIT, EXPLICIT
-p.dt            = 1e-3;
+p.energyType     = NEOHOOKEAN;
+p.solverType     = IMPLICIT_SPARSE;   // or IMPLICIT, EXPLICIT
+p.dt             = 1e-3;
 p.youngs_modulus = 1e2;
-p.poisson_ratio = 0.4;
-p.density       = 1.0;
-p.substeps      = 1;
+p.poisson_ratio  = 0.4;
+p.density        = 1.0;
+p.substeps       = 1;
 
 solver.Initialize(mesh);
 
@@ -148,11 +162,16 @@ for (int frame = 0; frame < 200; ++frame) {
 
 The key knobs in `ElasticitySolverT::Parameters` are:
 
-- `energyType` — `STVK`, `COROTATED`, or `NEOHOOKEAN`.
-- `solverType` — `EXPLICIT`, `IMPLICIT` (dense GPU CG), or `IMPLICIT_SPARSE` (cuSPARSE CSR + Jacobi PCG).
-- `platformType` — `CPU` or `GPU`.
+- `energyType` - `STVK`, `COROTATED`, or `NEOHOOKEAN`.
+- `solverType` - `EXPLICIT`, `IMPLICIT` (dense GPU CG), or `IMPLICIT_SPARSE` (cuSPARSE CSR + Jacobi PCG).
+- `platformType` - `CPU` or `GPU`.
 - `dt`, `substeps`, `density`, `youngs_modulus`, `poisson_ratio`, `damping`.
 - `gravity`, `boundary_min`, `boundary_max` for the solver boundary AABB.
+
+`ElasticitySolverT` also exposes simple kinematic-cylinder handles:
+`AddKinematicCylinder`, `AttachKinematicConstraints`, and
+`RotateKinematicCylinderXKeepingLocalPoint`. See `Example/ArmBendGPU/main.cpp`
+for a driven bending setup.
 
 ## Limitations
 
@@ -165,23 +184,28 @@ simulation. A few rough edges to be aware of:
   collision detection, no self-collision, and no robust contact resolution, so
   fast-moving or thin geometry can tunnel through the boundary or exhibit
   jitter at rest.
-- **Single solver object per example.** The project is now intentionally
-  centered on `ElasticitySolverT`; inter-object contact is not implemented.
+- **Single solver object per example.** The project is intentionally centered
+  on `ElasticitySolverT`; the old world/object management layer was removed,
+  and inter-object contact is not implemented.
+- **Kinematic constraints are simple primitives.** The arm bending demo uses
+  cylinder-shaped kinematic handles. They are useful for algorithm experiments,
+  but they are not a general rigging, skeleton, or articulation system.
 - **Implicit solver supports Neo-Hookean only.** Both the dense GPU CG path
   (`IMPLICIT`) and the sparse cuSPARSE PCG path (`IMPLICIT_SPARSE`) currently
   assert on `NEOHOOKEAN` energy. StVK and Corotated are only wired up through
   the explicit pipeline.
 - **Linear solver convergence is not adaptive.** The CG / PCG iteration count
-  is capped at the system DoF and uses a fixed tolerance; there is no line
-  search, no Newton outer loop, and no inertia/contact-aware preconditioning
-  beyond simple Jacobi.
-- **Dense GPU implicit path scales poorly.** It allocates a full `dof × dof`
+  is capped at the system DoF and uses a fixed tolerance; there is no full
+  adaptive Newton strategy or contact-aware preconditioning beyond simple
+  Jacobi.
+- **Dense GPU implicit path scales poorly.** It allocates a full `dof x dof`
   matrix in device memory, so it is only suitable for small meshes. For
   anything non-trivial, prefer `IMPLICIT_SPARSE`.
 - **CPU paths are minimal.** They exist mainly as reference implementations
   and are not performance-tuned.
-- **No checkpointing or scene description format.** Scenes are configured
-  directly in C++ inside each `Example/.../main.cpp`.
+- **No checkpointing or scene description format.** New scenes are configured
+  directly by creating and configuring one `ElasticitySolverT` in C++ inside
+  each `Example/.../main.cpp`.
 
 Contributions and bug reports are welcome.
 

@@ -17,6 +17,7 @@ build/
 output/
 output_frame/
 Reference/
+blender/
 bin/
 __pycache__/
 imgui.ini

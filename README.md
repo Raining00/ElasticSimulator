@@ -114,7 +114,7 @@ Available examples:
 | `ImplicitFEM_GPU_Sparse` | Implicit FEM, CUDA, cuSPARSE CSR + Jacobi PCG         |
 
 Simulated frames can be exported as `.obj` files into the `output/` directory
-by passing `true` to `world.AdvanceFrame(...)` (see `Example/FEMExplicitGPU/main.cpp`).
+by passing `true` to `solver.AdvanceFrame(...)` (see `Example/FEMExplicitGPU/main.cpp`).
 
 ## Using the solver in your own code
 
@@ -122,7 +122,6 @@ A minimal usage looks like this:
 
 ```cpp
 #include "Solver.h"
-#include "PhysicsWorld.h"
 #include "MeshToTet.hpp"
 
 using Scalar = double;
@@ -142,11 +141,8 @@ p.substeps      = 1;
 
 solver.Initialize(mesh);
 
-PhysicsWorldT<Scalar> world;
-world.AddObject(solver);
-
 for (int frame = 0; frame < 200; ++frame) {
-    world.AdvanceFrame(/*export=*/true);
+    solver.AdvanceFrame(/*export=*/true);
 }
 ```
 
@@ -156,22 +152,21 @@ The key knobs in `ElasticitySolverT::Parameters` are:
 - `solverType` — `EXPLICIT`, `IMPLICIT` (dense GPU CG), or `IMPLICIT_SPARSE` (cuSPARSE CSR + Jacobi PCG).
 - `platformType` — `CPU` or `GPU`.
 - `dt`, `substeps`, `density`, `youngs_modulus`, `poisson_ratio`, `damping`.
-- `gravity`, `boundary_min`, `boundary_max` for the world AABB.
+- `gravity`, `boundary_min`, `boundary_max` for the solver boundary AABB.
 
 ## Limitations
 
 This project is primarily a research / learning sandbox for FEM-based soft-body
 simulation. A few rough edges to be aware of:
 
-- **Collision handling is not fully stable or proper.** The current world
+- **Collision handling is not fully stable or proper.** The current boundary
   collision is just an axis-aligned bounding-box projection with simple
   restitution and friction in `k_BoundaryCheck`. There is no continuous
   collision detection, no self-collision, and no robust contact resolution, so
   fast-moving or thin geometry can tunnel through the boundary or exhibit
   jitter at rest.
-- **No object–object collisions.** The `PhysicsWorld` can hold multiple
-  objects, but inter-object contact is not implemented — each elastic body
-  only sees the world AABB.
+- **Single solver object per example.** The project is now intentionally
+  centered on `ElasticitySolverT`; inter-object contact is not implemented.
 - **Implicit solver supports Neo-Hookean only.** Both the dense GPU CG path
   (`IMPLICIT`) and the sparse cuSPARSE PCG path (`IMPLICIT_SPARSE`) currently
   assert on `NEOHOOKEAN` energy. StVK and Corotated are only wired up through

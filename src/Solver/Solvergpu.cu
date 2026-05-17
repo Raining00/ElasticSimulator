@@ -657,6 +657,96 @@ __global__ void k_zero_real(Real* __restrict__ data, int n)
 }
 
 template <typename Real>
+__global__ void k_applyKinematicTargets(
+    Vector<Real, 3>* __restrict__ vertex,
+    Vector<Real, 3>* __restrict__ velocity,
+    const int* __restrict__ constraintFlags,
+    const Real* __restrict__ constraintTargets,
+    int numVerts)
+{
+    int vid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (vid >= numVerts) return;
+
+    const int base = 3 * vid;
+    if (constraintFlags[base] == 0 &&
+        constraintFlags[base + 1] == 0 &&
+        constraintFlags[base + 2] == 0) {
+        return;
+    }
+
+    Vector<Real, 3> x = vertex[vid];
+    #pragma unroll
+    for (int c = 0; c < 3; ++c) {
+        if (constraintFlags[base + c]) {
+            x[c] = constraintTargets[base + c];
+            velocity[vid][c] = static_cast<Real>(0);
+        }
+    }
+    vertex[vid] = x;
+}
+
+template <typename Real>
+__global__ void k_applyDenseDirichletConstraints(
+    Real* __restrict__ A,
+    Real* __restrict__ b,
+    const int* __restrict__ constraintFlags,
+    int dof)
+{
+    const size_t total = static_cast<size_t>(dof) * static_cast<size_t>(dof);
+    size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx >= total) return;
+
+    const int row = static_cast<int>(idx / dof);
+    const int col = static_cast<int>(idx - static_cast<size_t>(row) * dof);
+    const bool rowConstrained = constraintFlags[row] != 0;
+    const bool colConstrained = constraintFlags[col] != 0;
+    if (rowConstrained || colConstrained) {
+        A[idx] = (row == col && rowConstrained) ? static_cast<Real>(1) : static_cast<Real>(0);
+    }
+}
+
+template <typename Real>
+__global__ void k_applyDenseDirichletRhs(
+    Real* __restrict__ b,
+    const int* __restrict__ constraintFlags,
+    int dof)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= dof) return;
+    if (constraintFlags[i]) {
+        b[i] = static_cast<Real>(0);
+    }
+}
+
+template <typename Real>
+__global__ void k_applyCsrDirichletConstraints(
+    Real* __restrict__ A_values,
+    const int* __restrict__ A_row_offsets,
+    const int* __restrict__ A_col_indices,
+    const int* __restrict__ A_diag_indices,
+    Real* __restrict__ b,
+    const int* __restrict__ constraintFlags,
+    int dof)
+{
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= dof) return;
+
+    const bool rowConstrained = constraintFlags[row] != 0;
+    for (int idx = A_row_offsets[row]; idx < A_row_offsets[row + 1]; ++idx) {
+        const int col = A_col_indices[idx];
+        if (rowConstrained || constraintFlags[col]) {
+            A_values[idx] = (rowConstrained && idx == A_diag_indices[row])
+                ? static_cast<Real>(1)
+                : static_cast<Real>(0);
+        }
+    }
+
+    if (rowConstrained) {
+        b[row] = static_cast<Real>(0);
+    }
+}
+
+template <typename Real>
 __global__ void k_computeK_csr(
     const Tetrahedron<Real>* __restrict__ tets,
     const mat3<Real>*        __restrict__ d_F,
@@ -1083,6 +1173,10 @@ void ElasticitySolverT<Real>::Step_Explicit()
     int numTets = static_cast<int>(h_tet.size());
     int numVerts = static_cast<int>(h_vertex.size());
 
+    k_applyKinematicTargets<Real><<<grid1D(numVerts), 256>>>(
+        d_vertex, d_vertex_velocity, d_constraint_dof_flags, d_constraint_dof_targets, numVerts);
+    CUDA_CHECK(cudaGetLastError());
+
     k_AddGravity<<<grid1D(numVerts), 256>>>(d_force, d_mass, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
@@ -1092,6 +1186,10 @@ void ElasticitySolverT<Real>::Step_Explicit()
 
     k_Integrate<Real><<<grid1D(numVerts), 256>>>(
         d_vertex, d_vertex_velocity, d_force, d_mass, numVerts);
+    CUDA_CHECK(cudaGetLastError());
+
+    k_applyKinematicTargets<Real><<<grid1D(numVerts), 256>>>(
+        d_vertex, d_vertex_velocity, d_constraint_dof_flags, d_constraint_dof_targets, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
     k_BoundaryCheck<Real><<<grid1D(numVerts), 256>>>(
@@ -1115,6 +1213,10 @@ void ElasticitySolverT<Real>::Step_Implicit()
         InitCUDALib();
     }
 
+    k_applyKinematicTargets<Real><<<grid1D(numVerts), 256>>>(
+        d_vertex, d_vertex_velocity, d_constraint_dof_flags, d_constraint_dof_targets, numVerts);
+    CUDA_CHECK(cudaGetLastError());
+
     CUDA_CHECK(cudaMemset(DnA, 0, dof * dof * sizeof(Real)));
     CUDA_CHECK(cudaMemset(d_force, 0, sizeof(Vec3) * numVerts));
     CUDA_CHECK(cudaMemset(d_b, 0, dof * sizeof(Real)));
@@ -1135,6 +1237,14 @@ void ElasticitySolverT<Real>::Step_Implicit()
         DnA, d_b, d_vertex_velocity, d_force, d_mass, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
+    const size_t denseEntries = static_cast<size_t>(dof) * static_cast<size_t>(dof);
+    k_applyDenseDirichletConstraints<Real><<<grid1D(static_cast<int>(denseEntries), 256), 256>>>(
+        DnA, d_b, d_constraint_dof_flags, dof);
+    CUDA_CHECK(cudaGetLastError());
+    k_applyDenseDirichletRhs<Real><<<grid1D(dof), 256>>>(
+        d_b, d_constraint_dof_flags, dof);
+    CUDA_CHECK(cudaGetLastError());
+
     int iter = DenseCG<Real>(
         cublasH,
         DnA,
@@ -1152,6 +1262,10 @@ void ElasticitySolverT<Real>::Step_Implicit()
     // Implicit integrate.
     k_integrateImplicit<Real><<<grid1D(numVerts), 256>>>(
         d_vertex, d_vertex_velocity, delta_x, numVerts);
+    CUDA_CHECK(cudaGetLastError());
+
+    k_applyKinematicTargets<Real><<<grid1D(numVerts), 256>>>(
+        d_vertex, d_vertex_velocity, d_constraint_dof_flags, d_constraint_dof_targets, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
     //Boundary check.
@@ -1177,6 +1291,10 @@ void ElasticitySolverT<Real>::Step_Implicit_Sparse()
     if (cublasH == nullptr) {
         InitCUDALib();
     }
+
+    k_applyKinematicTargets<Real><<<grid1D(numVerts), 256>>>(
+        d_vertex, d_vertex_velocity, d_constraint_dof_flags, d_constraint_dof_targets, numVerts);
+    CUDA_CHECK(cudaGetLastError());
 
     // Reset working buffers for this substep.
     k_zero_real<Real><<<grid1D(nnz), 256>>>(d_A_values, nnz);
@@ -1207,6 +1325,16 @@ void ElasticitySolverT<Real>::Step_Implicit_Sparse()
         d_A_values, d_A_diag_indices, d_b, d_vertex_velocity, d_force, d_mass, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
+    k_applyCsrDirichletConstraints<Real><<<grid1D(dof), 256>>>(
+        d_A_values,
+        d_A_row_offsets,
+        d_A_col_indices,
+        d_A_diag_indices,
+        d_b,
+        d_constraint_dof_flags,
+        dof);
+    CUDA_CHECK(cudaGetLastError());
+
     // Build Jacobi preconditioner from the assembled diagonal.
     k_extract_diag_inv<Real><<<grid1D(dof), 256>>>(
         d_A_values, d_A_diag_indices, d_M_inv, dof);
@@ -1235,6 +1363,10 @@ void ElasticitySolverT<Real>::Step_Implicit_Sparse()
     // Implicit integrate.
     k_integrateImplicit<Real><<<grid1D(numVerts), 256>>>(
         d_vertex, d_vertex_velocity, delta_x, numVerts);
+    CUDA_CHECK(cudaGetLastError());
+
+    k_applyKinematicTargets<Real><<<grid1D(numVerts), 256>>>(
+        d_vertex, d_vertex_velocity, d_constraint_dof_flags, d_constraint_dof_targets, numVerts);
     CUDA_CHECK(cudaGetLastError());
 
     CUDA_CHECK(cudaDeviceSynchronize());

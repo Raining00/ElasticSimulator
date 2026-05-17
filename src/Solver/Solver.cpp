@@ -8,6 +8,8 @@
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
+#include <stdexcept>
+#include <cmath>
 #include <cublas_v2.h>
 #include <cusparse.h>
 
@@ -81,6 +83,14 @@ bool ElasticitySolverT<Real>::DataTransfer(const std::vector<Tetrahedron<Real>>&
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_mass), vertices.size() * sizeof(Real)));
     // Initialize masses to zero (this would typically be computed based on density and volume)
     CUDA_CHECK(cudaMemset(d_mass, 0, vertices.size() * sizeof(Real)));
+
+    const size_t dof = vertices.size() * 3;
+    h_constraint_dof_flags.assign(dof, 0);
+    h_constraint_dof_targets.assign(dof, Real(0));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_constraint_dof_flags), dof * sizeof(int)));
+    CUDA_CHECK(cudaMemset(d_constraint_dof_flags, 0, dof * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_constraint_dof_targets), dof * sizeof(Real)));
+    CUDA_CHECK(cudaMemset(d_constraint_dof_targets, 0, dof * sizeof(Real)));
     
     return true;
 }
@@ -230,6 +240,145 @@ void ElasticitySolverT<Real>::PrintInfo() const
 }
 
 template <typename Real>
+static typename ElasticitySolverT<Real>::Vec3 LocalToWorld(
+    const typename ElasticitySolverT<Real>::KinematicCylinder& cylinder,
+    const typename ElasticitySolverT<Real>::Vec3& local)
+{
+    return cylinder.rotation * local + cylinder.translation;
+}
+
+template <typename Real>
+static typename ElasticitySolverT<Real>::Vec3 WorldToLocal(
+    const typename ElasticitySolverT<Real>::KinematicCylinder& cylinder,
+    const typename ElasticitySolverT<Real>::Vec3& world)
+{
+    return mat3<Real>::transpose(cylinder.rotation) * (world - cylinder.translation);
+}
+
+template <typename Real>
+static bool CylinderContains(
+    const typename ElasticitySolverT<Real>::KinematicCylinder& cylinder,
+    const typename ElasticitySolverT<Real>::Vec3& world)
+{
+    const auto local = WorldToLocal<Real>(cylinder, world);
+    if (local[1] > cylinder.height * Real(0.5) || local[1] < -cylinder.height * Real(0.5)) {
+        return false;
+    }
+    return local[0] * local[0] + local[2] * local[2] <= cylinder.radius * cylinder.radius;
+}
+
+template <typename Real>
+int ElasticitySolverT<Real>::AddKinematicCylinder(const Vec3& center, Real radius, Real height)
+{
+    KinematicCylinder cylinder;
+    cylinder.translation = center;
+    cylinder.rotation = mat3<Real>(Real(1));
+    cylinder.radius = radius;
+    cylinder.height = height;
+    h_kinematicCylinders.push_back(cylinder);
+    return static_cast<int>(h_kinematicCylinders.size() - 1);
+}
+
+template <typename Real>
+void ElasticitySolverT<Real>::AttachKinematicConstraints(int shapeID)
+{
+    if (shapeID < 0 || shapeID >= static_cast<int>(h_kinematicCylinders.size())) {
+        throw std::out_of_range("Invalid kinematic cylinder id");
+    }
+
+    const auto& cylinder = h_kinematicCylinders[static_cast<size_t>(shapeID)];
+    int added = 0;
+    for (int i = 0; i < static_cast<int>(h_vertex.size()); ++i) {
+        if (!CylinderContains<Real>(cylinder, h_vertex[static_cast<size_t>(i)])) {
+            continue;
+        }
+
+        bool alreadyConstrained = false;
+        for (const auto& constraint : h_kinematicConstraints) {
+            if (constraint.vertexID == i) {
+                alreadyConstrained = true;
+                break;
+            }
+        }
+        if (alreadyConstrained) {
+            continue;
+        }
+
+        KinematicConstraint constraint;
+        constraint.vertexID = i;
+        constraint.shapeID = shapeID;
+        constraint.localPosition = WorldToLocal<Real>(cylinder, h_vertex[static_cast<size_t>(i)]);
+        h_kinematicConstraints.push_back(constraint);
+        ++added;
+    }
+
+    std::cout << "Attached " << added << " kinematic vertices to cylinder " << shapeID << std::endl;
+    UpdateKinematicConstraints();
+}
+
+template <typename Real>
+void ElasticitySolverT<Real>::RotateKinematicCylinderXKeepingLocalPoint(
+    int shapeID,
+    Real radians,
+    const Vec3& localPoint,
+    const Vec3& worldPin)
+{
+    if (shapeID < 0 || shapeID >= static_cast<int>(h_kinematicCylinders.size())) {
+        throw std::out_of_range("Invalid kinematic cylinder id");
+    }
+
+    const Real c = std::cos(radians);
+    const Real s = std::sin(radians);
+    const mat3<Real> rotX(
+        Real(1), Real(0), Real(0),
+        Real(0), c, -s,
+        Real(0), s, c);
+
+    auto& cylinder = h_kinematicCylinders[static_cast<size_t>(shapeID)];
+    cylinder.rotation = rotX * cylinder.rotation;
+    const Vec3 world = LocalToWorld<Real>(cylinder, localPoint);
+    cylinder.translation -= world - worldPin;
+}
+
+template <typename Real>
+void ElasticitySolverT<Real>::UpdateKinematicConstraints()
+{
+    if (h_constraint_dof_flags.empty() || h_constraint_dof_targets.empty()) {
+        return;
+    }
+
+    std::fill(h_constraint_dof_flags.begin(), h_constraint_dof_flags.end(), 0);
+    std::fill(h_constraint_dof_targets.begin(), h_constraint_dof_targets.end(), Real(0));
+
+    for (const auto& constraint : h_kinematicConstraints) {
+        if (constraint.shapeID < 0 || constraint.shapeID >= static_cast<int>(h_kinematicCylinders.size())) {
+            continue;
+        }
+
+        const auto& cylinder = h_kinematicCylinders[static_cast<size_t>(constraint.shapeID)];
+        const Vec3 target = LocalToWorld<Real>(cylinder, constraint.localPosition);
+        const int base = 3 * constraint.vertexID;
+        for (int c = 0; c < 3; ++c) {
+            h_constraint_dof_flags[static_cast<size_t>(base + c)] = 1;
+            h_constraint_dof_targets[static_cast<size_t>(base + c)] = target[c];
+        }
+    }
+
+    if (d_constraint_dof_flags && d_constraint_dof_targets) {
+        CUDA_CHECK(cudaMemcpy(
+            d_constraint_dof_flags,
+            h_constraint_dof_flags.data(),
+            h_constraint_dof_flags.size() * sizeof(int),
+            cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(
+            d_constraint_dof_targets,
+            h_constraint_dof_targets.data(),
+            h_constraint_dof_targets.size() * sizeof(Real),
+            cudaMemcpyHostToDevice));
+    }
+}
+
+template <typename Real>
 ElasticitySolverT<Real>::~ElasticitySolverT()
 {
     // Free GPU memory
@@ -239,6 +388,8 @@ ElasticitySolverT<Real>::~ElasticitySolverT()
     CUDA_CHECK(cudaFree(d_mass));
     CUDA_CHECK(cudaFree(d_force));
     CUDA_CHECK(cudaFree(d_F));
+    if (d_constraint_dof_flags) CUDA_CHECK(cudaFree(d_constraint_dof_flags));
+    if (d_constraint_dof_targets) CUDA_CHECK(cudaFree(d_constraint_dof_targets));
 
     const bool isImplicitGPU =
         (h_params.platformType == GPU) &&
@@ -284,50 +435,6 @@ void ElasticitySolverT<Real>::AdvanceFrame(bool export_result)
 
     SimulateFrame(export_result);
     ++frame_counter;
-}
-
-template <typename Real>
-PhysicsObjectType ElasticitySolverT<Real>::GetObjectType() const
-{
-    return PHYSICS_OBJECT_ELASTIC;
-}
-
-template <typename Real>
-typename ElasticitySolverT<Real>::AABB ElasticitySolverT<Real>::GetWorldBounds() const
-{
-    AABB bounds;
-    if (h_vertex.empty())
-        return bounds;
-
-    std::vector<Vec3> host_vertices;
-    if (h_params.platformType == GPU) {
-        host_vertices.resize(h_vertex.size());
-        CUDA_CHECK(cudaMemcpy(host_vertices.data(), d_vertex, h_vertex.size() * sizeof(Vec3), cudaMemcpyDeviceToHost));
-    }
-
-    const std::vector<Vec3>& vertices = (h_params.platformType == GPU) ? host_vertices : h_vertex;
-    bounds.valid = true;
-    bounds.min = vertices[0];
-    bounds.max = vertices[0];
-
-    for (const Vec3& v : vertices) {
-        bounds.min.x = std::min(bounds.min.x, v.x);
-        bounds.min.y = std::min(bounds.min.y, v.y);
-        bounds.min.z = std::min(bounds.min.z, v.z);
-        bounds.max.x = std::max(bounds.max.x, v.x);
-        bounds.max.y = std::max(bounds.max.y, v.y);
-        bounds.max.z = std::max(bounds.max.z, v.z);
-    }
-    return bounds;
-}
-
-template <typename Real>
-void ElasticitySolverT<Real>::SetWorldCollisionSettings(const CollisionSettings& settings)
-{
-    h_params.boundary_min = settings.boundary_min;
-    h_params.boundary_max = settings.boundary_max;
-    h_params.barrier_distance = settings.barrier_distance;
-    h_params.barrier_stiffness = settings.barrier_stiffness;
 }
 
 template <typename Real>
@@ -411,6 +518,8 @@ void ElasticitySolverT<Real>::SimulateFrame(bool export_result)
         PrintInfo();
         info_printed = true;
     }
+
+    UpdateKinematicConstraints();
 
     for (unsigned int sub = 0; sub < h_params.substeps; ++sub) {
         Step();
@@ -657,14 +766,17 @@ template const Mesh<double>& ElasticitySolverT<double>::GetSurfaceMesh() const;
 template const ElasticitySolverT<float>::Vec3* ElasticitySolverT<float>::GetDeviceVertices() const;
 template const ElasticitySolverT<double>::Vec3* ElasticitySolverT<double>::GetDeviceVertices() const;
 
-template PhysicsObjectType ElasticitySolverT<float>::GetObjectType() const;
-template PhysicsObjectType ElasticitySolverT<double>::GetObjectType() const;
+template int ElasticitySolverT<float>::AddKinematicCylinder(const Vec3&, float, float);
+template int ElasticitySolverT<double>::AddKinematicCylinder(const Vec3&, double, double);
 
-template ElasticitySolverT<float>::AABB ElasticitySolverT<float>::GetWorldBounds() const;
-template ElasticitySolverT<double>::AABB ElasticitySolverT<double>::GetWorldBounds() const;
+template void ElasticitySolverT<float>::AttachKinematicConstraints(int);
+template void ElasticitySolverT<double>::AttachKinematicConstraints(int);
 
-template void ElasticitySolverT<float>::SetWorldCollisionSettings(const ElasticitySolverT<float>::CollisionSettings&);
-template void ElasticitySolverT<double>::SetWorldCollisionSettings(const ElasticitySolverT<double>::CollisionSettings&);
+template void ElasticitySolverT<float>::RotateKinematicCylinderXKeepingLocalPoint(int, float, const Vec3&, const Vec3&);
+template void ElasticitySolverT<double>::RotateKinematicCylinderXKeepingLocalPoint(int, double, const Vec3&, const Vec3&);
+
+template void ElasticitySolverT<float>::UpdateKinematicConstraints();
+template void ElasticitySolverT<double>::UpdateKinematicConstraints();
 
 template void ElasticitySolverT<float>::InitCUDALib();
 template void ElasticitySolverT<double>::InitCUDALib();

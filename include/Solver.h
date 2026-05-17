@@ -1,9 +1,9 @@
 #pragma once
 #include "BaseStructure.hpp"
-#include "PhysicsWorld.h"
 #include <cstddef>
 #include <type_traits>
 #include <string>
+#include <vector>
 
 enum EnergyType
 {
@@ -33,13 +33,11 @@ typedef struct cusparseSpMatDescr* cusparseSpMatDescr_t;
 typedef struct cusparseDnVecDescr* cusparseDnVecDescr_t;
 
 template <typename Real>
-class ElasticitySolverT : public PhysicsObjectT<Real>
+class ElasticitySolverT
 {
 public:
     using Scalar = Real;
     using Vec3 = Vector<Real, 3>;
-    using AABB = PhysicsAABBT<Real>;
-    using CollisionSettings = WorldCollisionSettingsT<Real>;
 
     struct Parameters
     {
@@ -64,26 +62,28 @@ public:
     };
 
     ElasticitySolverT() = default;
-    ~ElasticitySolverT() override;
+    ~ElasticitySolverT();
 
     void Initialize(const Mesh<Real>& mesh);
 
     bool Initialize(const std::string& filename);
 
-    void AdvanceFrame(bool export_result = false) override;
+    void AdvanceFrame(bool export_result = false);
     void Simulate(unsigned int total_frame = 30, bool export_results = true);
     void SimulateFrame(bool export_result = false);
 
     void SetInitialOffset(const Vec3& offset);
     void RotateVerticesByEulerAngles(const Vec3& euler_angles);
     void RotateVerticesAroundCentroidByEulerAngles(const Vec3& euler_angles);
+    int AddKinematicCylinder(const Vec3& center, Real radius, Real height);
+    void AttachKinematicConstraints(int shapeID);
+    void RotateKinematicCylinderXKeepingLocalPoint(int shapeID, Real radians, const Vec3& localPoint, const Vec3& worldPin);
+    void UpdateKinematicConstraints();
+    size_t GetKinematicConstraintCount() const { return h_kinematicConstraints.size(); }
     void ExportMesh(unsigned int frame);
-    const Mesh<Real>& GetSurfaceMesh() const override;
-    const Vec3* GetDeviceVertices() const override;
-    size_t GetVertexCount() const override;
-    PhysicsObjectType GetObjectType() const override;
-    AABB GetWorldBounds() const override;
-    void SetWorldCollisionSettings(const CollisionSettings& settings) override;
+    const Mesh<Real>& GetSurfaceMesh() const;
+    const Vec3* GetDeviceVertices() const;
+    size_t GetVertexCount() const;
 	Parameters& GetParameters() { return h_params; }
     const Parameters& GetParameters() const { return h_params; }
 
@@ -108,12 +108,32 @@ protected:
 
     void PrintInfo() const;
 
+public:
+    struct KinematicCylinder
+    {
+        Vec3 translation = { Real(0), Real(0), Real(0) };
+        mat3<Real> rotation = mat3<Real>(Real(1));
+        Real radius = Real(0);
+        Real height = Real(0);
+    };
+
+    struct KinematicConstraint
+    {
+        int vertexID = -1;
+        int shapeID = -1;
+        Vec3 localPosition = { Real(0), Real(0), Real(0) };
+    };
+
 private:
     // host data
     std::vector<Tetrahedron<Real>> h_tet;
     std::vector<Vec3> h_vertex;
     std::vector<Vec3> h_velocity;
     std::vector<Real> h_mass;
+    std::vector<KinematicCylinder> h_kinematicCylinders;
+    std::vector<KinematicConstraint> h_kinematicConstraints;
+    std::vector<int> h_constraint_dof_flags;
+    std::vector<Real> h_constraint_dof_targets;
 	Parameters h_params;
     Mesh<Real> suraceMesh;
 
@@ -129,6 +149,8 @@ private:
     int* d_A_diag_indices = nullptr;
     Real* d_A_values = nullptr;
     int* d_elem_to_A_csr = nullptr;
+    int* d_constraint_dof_flags = nullptr;
+    Real* d_constraint_dof_targets = nullptr;
 
     // for implicit solver. A x = B
     Real* delta_x = nullptr;

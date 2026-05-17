@@ -13,6 +13,7 @@
 mono_crash.*
 # Build results
 build/
+.claude/
 .vscode/
 output/
 output_frame/

@@ -29,6 +29,7 @@ add_subdirectory(extern/glfw)
 
 add_library(ElasticBody
     src/MeshToTet.cpp
+    src/SkeletonAnimation.cpp
     src/Solver/Solver.cpp
     src/Solver/Solvergpu.cu
     src/Solver/Solvercpu.cpp

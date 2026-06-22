@@ -1,5 +1,7 @@
 #pragma once
 #include "BaseStructure.hpp"
+#include "SkeletonAnimation.hpp"
+#include <array>
 #include <cstddef>
 #include <type_traits>
 #include <string>
@@ -59,6 +61,8 @@ public:
 		Vec3 gravity = { static_cast<Real>(0.0), static_cast<Real>(-9.81), static_cast<Real>(0.0) }; // Gravity vector
 		Vec3 boundary_min = { static_cast<Real>(-10.0), static_cast<Real>(0.0), static_cast<Real>(-10.0) }; // Minimum boundary for collision
 		Vec3 boundary_max = { static_cast<Real>(10.0), static_cast<Real>(10.0), static_cast<Real>(10.0) }; // Maximum boundary for collision
+        Real muscle_coupling_stiffness = static_cast<Real>(0.0);
+        Real muscle_coupling_damping = static_cast<Real>(0.0);
     };
 
     ElasticitySolverT() = default;
@@ -80,6 +84,10 @@ public:
     void RotateKinematicCylinderXKeepingLocalPoint(int shapeID, Real radians, const Vec3& localPoint, const Vec3& worldPin);
     void UpdateKinematicConstraints();
     size_t GetKinematicConstraintCount() const { return h_kinematicConstraints.size(); }
+    void BindSkeletonToTetMesh(const SkeletonFrameT<Real>& restFrame, Real maxDistance = static_cast<Real>(0));
+    void UpdateSkeletonCouplingTargets(const SkeletonFrameT<Real>& frame);
+    void ClearSkeletonCoupling();
+    size_t GetSkeletonBindingCount() const { return h_skeletonBindingCount; }
     void ExportMesh(unsigned int frame);
     const Mesh<Real>& GetSurfaceMesh() const;
     const Vec3* GetDeviceVertices() const;
@@ -124,6 +132,13 @@ public:
         Vec3 localPosition = { Real(0), Real(0), Real(0) };
     };
 
+    struct SkeletonVertexBinding
+    {
+        int boneID = -1;
+        Vec3 restPosition = { Real(0), Real(0), Real(0) };
+        Real weight = Real(0);
+    };
+
 private:
     // host data
     std::vector<Tetrahedron<Real>> h_tet;
@@ -134,6 +149,14 @@ private:
     std::vector<KinematicConstraint> h_kinematicConstraints;
     std::vector<int> h_constraint_dof_flags;
     std::vector<Real> h_constraint_dof_targets;
+    std::vector<SkeletonVertexBinding> h_skeletonBindings;
+    std::vector<Vec3> h_skeletonTargets;
+    std::vector<Vec3> h_skeletonTargetVelocities;
+    std::vector<Real> h_skeletonWeights;
+    std::vector<std::array<Real, 16>> h_skeletonRestInverseWorldMatrices;
+    size_t h_skeletonBindingCount = 0;
+    Real h_lastSkeletonTime = Real(0);
+    bool h_hasLastSkeletonTime = false;
 	Parameters h_params;
     Mesh<Real> suraceMesh;
 
@@ -151,6 +174,9 @@ private:
     int* d_elem_to_A_csr = nullptr;
     int* d_constraint_dof_flags = nullptr;
     Real* d_constraint_dof_targets = nullptr;
+    Vec3* d_skeleton_targets = nullptr;
+    Vec3* d_skeleton_target_velocities = nullptr;
+    Real* d_skeleton_weights = nullptr;
 
     // for implicit solver. A x = B
     Real* delta_x = nullptr;

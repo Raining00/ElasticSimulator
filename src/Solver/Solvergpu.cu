@@ -336,6 +336,104 @@ __global__ void k_AddGravity(
 // ─────────────────────────────────────────────────────────────────────────────
 
 template <typename Real>
+__global__ void k_AddSkeletonCouplingForces(
+    const Vector<Real, 3>* __restrict__ vertex,
+    const Vector<Real, 3>* __restrict__ velocity,
+    Vector<Real, 3>* __restrict__ force,
+    const Vector<Real, 3>* __restrict__ targets,
+    const Vector<Real, 3>* __restrict__ targetVelocities,
+    const Real* __restrict__ weights,
+    Real stiffness,
+    Real damping,
+    int numVerts)
+{
+    int vid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (vid >= numVerts) return;
+
+    const Real weight = weights[vid];
+    if (weight <= static_cast<Real>(0) || stiffness <= static_cast<Real>(0)) {
+        return;
+    }
+
+    const Vector<Real, 3> dx = targets[vid] - vertex[vid];
+    const Vector<Real, 3> dv = targetVelocities[vid] - velocity[vid];
+    force[vid] += weight * (stiffness * dx + damping * dv);
+}
+
+template <typename Real>
+__global__ void k_AddSkeletonCouplingImplicitForces(
+    const Vector<Real, 3>* __restrict__ vertex,
+    Vector<Real, 3>* __restrict__ force,
+    const Vector<Real, 3>* __restrict__ targets,
+    const Vector<Real, 3>* __restrict__ targetVelocities,
+    const Real* __restrict__ weights,
+    Real stiffness,
+    Real damping,
+    int numVerts)
+{
+    int vid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (vid >= numVerts) return;
+
+    const Real weight = weights[vid];
+    if (weight <= static_cast<Real>(0) || stiffness <= static_cast<Real>(0)) {
+        return;
+    }
+
+    const Vector<Real, 3> dx = targets[vid] - vertex[vid];
+    force[vid] += weight * (stiffness * dx + damping * targetVelocities[vid]);
+}
+
+template <typename Real>
+__global__ void k_AddSkeletonCouplingDenseDiagonal(
+    Real* __restrict__ A,
+    const Real* __restrict__ weights,
+    Real stiffness,
+    Real damping,
+    int numVerts)
+{
+    int vid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (vid >= numVerts) return;
+
+    const Real weight = weights[vid];
+    if (weight <= static_cast<Real>(0) || stiffness <= static_cast<Real>(0)) {
+        return;
+    }
+
+    const int dof = 3 * numVerts;
+    const Real dt = GetDevParams<Real>().dt;
+    const Real diagonal = weight * (stiffness + damping / dt);
+    for (int c = 0; c < 3; ++c) {
+        const int row = 3 * vid + c;
+        A[static_cast<size_t>(row) * dof + row] += diagonal;
+    }
+}
+
+template <typename Real>
+__global__ void k_AddSkeletonCouplingCsrDiagonal(
+    Real* __restrict__ A_values,
+    const int* __restrict__ A_diag_indices,
+    const Real* __restrict__ weights,
+    Real stiffness,
+    Real damping,
+    int numVerts)
+{
+    int vid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (vid >= numVerts) return;
+
+    const Real weight = weights[vid];
+    if (weight <= static_cast<Real>(0) || stiffness <= static_cast<Real>(0)) {
+        return;
+    }
+
+    const Real dt = GetDevParams<Real>().dt;
+    const Real diagonal = weight * (stiffness + damping / dt);
+    for (int c = 0; c < 3; ++c) {
+        const int dof = 3 * vid + c;
+        A_values[A_diag_indices[dof]] += diagonal;
+    }
+}
+
+template <typename Real>
 __global__ void k_ComputeForces(
     const Tetrahedron<Real>* __restrict__ tets,
     const Vector<Real, 3>* __restrict__ vertex,
@@ -1184,6 +1282,20 @@ void ElasticitySolverT<Real>::Step_Explicit()
         d_tet, d_vertex, d_force, d_F, numTets);
     CUDA_CHECK(cudaGetLastError());
 
+    if (d_skeleton_weights && h_params.muscle_coupling_stiffness > static_cast<Real>(0)) {
+        k_AddSkeletonCouplingForces<Real><<<grid1D(numVerts), 256>>>(
+            d_vertex,
+            d_vertex_velocity,
+            d_force,
+            d_skeleton_targets,
+            d_skeleton_target_velocities,
+            d_skeleton_weights,
+            h_params.muscle_coupling_stiffness,
+            h_params.muscle_coupling_damping,
+            numVerts);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
     k_Integrate<Real><<<grid1D(numVerts), 256>>>(
         d_vertex, d_vertex_velocity, d_force, d_mass, numVerts);
     CUDA_CHECK(cudaGetLastError());
@@ -1228,6 +1340,19 @@ void ElasticitySolverT<Real>::Step_Implicit()
         d_tet, d_vertex, d_force, d_F, numTets);
     CUDA_CHECK(cudaGetLastError());
 
+    if (d_skeleton_weights && h_params.muscle_coupling_stiffness > static_cast<Real>(0)) {
+        k_AddSkeletonCouplingImplicitForces<Real><<<grid1D(numVerts), 256>>>(
+            d_vertex,
+            d_force,
+            d_skeleton_targets,
+            d_skeleton_target_velocities,
+            d_skeleton_weights,
+            h_params.muscle_coupling_stiffness,
+            h_params.muscle_coupling_damping,
+            numVerts);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
     // Assemble linear system
     k_computeK<Real><<<grid1D(numTets), 256>>>(
         d_tet, d_F, d_mass, DnA, numTets, numVerts);
@@ -1236,6 +1361,16 @@ void ElasticitySolverT<Real>::Step_Implicit()
     k_Assemble<Real><<<grid1D(numVerts), 256>>>(
         DnA, d_b, d_vertex_velocity, d_force, d_mass, numVerts);
     CUDA_CHECK(cudaGetLastError());
+
+    if (d_skeleton_weights && h_params.muscle_coupling_stiffness > static_cast<Real>(0)) {
+        k_AddSkeletonCouplingDenseDiagonal<Real><<<grid1D(numVerts), 256>>>(
+            DnA,
+            d_skeleton_weights,
+            h_params.muscle_coupling_stiffness,
+            h_params.muscle_coupling_damping,
+            numVerts);
+        CUDA_CHECK(cudaGetLastError());
+    }
 
     const size_t denseEntries = static_cast<size_t>(dof) * static_cast<size_t>(dof);
     k_applyDenseDirichletConstraints<Real><<<grid1D(static_cast<int>(denseEntries), 256), 256>>>(
@@ -1309,6 +1444,19 @@ void ElasticitySolverT<Real>::Step_Implicit_Sparse()
         d_tet, d_vertex, d_force, d_F, numTets);
     CUDA_CHECK(cudaGetLastError());
 
+    if (d_skeleton_weights && h_params.muscle_coupling_stiffness > static_cast<Real>(0)) {
+        k_AddSkeletonCouplingImplicitForces<Real><<<grid1D(numVerts), 256>>>(
+            d_vertex,
+            d_force,
+            d_skeleton_targets,
+            d_skeleton_target_velocities,
+            d_skeleton_weights,
+            h_params.muscle_coupling_stiffness,
+            h_params.muscle_coupling_damping,
+            numVerts);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
     // Scatter element 12x12 stiffness blocks into the global CSR values.
     k_computeK_csr<Real><<<grid1D(numTets), 256>>>(
         d_tet, d_F, d_elem_to_A_csr, d_A_values, numTets);
@@ -1324,6 +1472,17 @@ void ElasticitySolverT<Real>::Step_Implicit_Sparse()
     k_assemble_csr<Real><<<grid1D(numVerts), 256>>>(
         d_A_values, d_A_diag_indices, d_b, d_vertex_velocity, d_force, d_mass, numVerts);
     CUDA_CHECK(cudaGetLastError());
+
+    if (d_skeleton_weights && h_params.muscle_coupling_stiffness > static_cast<Real>(0)) {
+        k_AddSkeletonCouplingCsrDiagonal<Real><<<grid1D(numVerts), 256>>>(
+            d_A_values,
+            d_A_diag_indices,
+            d_skeleton_weights,
+            h_params.muscle_coupling_stiffness,
+            h_params.muscle_coupling_damping,
+            numVerts);
+        CUDA_CHECK(cudaGetLastError());
+    }
 
     k_applyCsrDirichletConstraints<Real><<<grid1D(dof), 256>>>(
         d_A_values,

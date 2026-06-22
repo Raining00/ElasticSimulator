@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include <stdexcept>
 #include <cmath>
+#include <limits>
 #include <cublas_v2.h>
 #include <cusparse.h>
 
@@ -237,6 +238,108 @@ void ElasticitySolverT<Real>::PrintInfo() const
     std::cout << "Gravity: (" << h_params.gravity.x << ", " << h_params.gravity.y << ", " << h_params.gravity.z << ")" << std::endl;
     std::cout << "Boundary Min: (" << h_params.boundary_min.x << ", " << h_params.boundary_min.y << ", " << h_params.boundary_min.z << ")" << std::endl;
     std::cout << "Boundary Max: (" << h_params.boundary_max.x << ", " << h_params.boundary_max.y << ", " << h_params.boundary_max.z << ")" << std::endl;
+    std::cout << "Muscle Coupling Stiffness: " << h_params.muscle_coupling_stiffness << std::endl;
+    std::cout << "Muscle Coupling Damping: " << h_params.muscle_coupling_damping << std::endl;
+}
+
+template <typename Real>
+static Real Dot3(
+    const typename ElasticitySolverT<Real>::Vec3& a,
+    const typename ElasticitySolverT<Real>::Vec3& b)
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+template <typename Real>
+static Real SegmentDistanceSquared(
+    const typename ElasticitySolverT<Real>::Vec3& p,
+    const typename ElasticitySolverT<Real>::Vec3& a,
+    const typename ElasticitySolverT<Real>::Vec3& b)
+{
+    const auto ab = b - a;
+    const Real len2 = Dot3<Real>(ab, ab);
+    if (len2 <= static_cast<Real>(1e-20)) {
+        const auto d = p - a;
+        return Dot3<Real>(d, d);
+    }
+
+    Real t = Dot3<Real>(p - a, ab) / len2;
+    t = std::max(static_cast<Real>(0), std::min(static_cast<Real>(1), t));
+    const auto q = a + ab * t;
+    const auto d = p - q;
+    return Dot3<Real>(d, d);
+}
+
+template <typename Real>
+static typename ElasticitySolverT<Real>::Vec3 TransformPoint(
+    const std::array<Real, 16>& m,
+    const typename ElasticitySolverT<Real>::Vec3& p)
+{
+    using Vec3 = typename ElasticitySolverT<Real>::Vec3;
+    const Real x = m[0] * p.x + m[1] * p.y + m[2] * p.z + m[3];
+    const Real y = m[4] * p.x + m[5] * p.y + m[6] * p.z + m[7];
+    const Real z = m[8] * p.x + m[9] * p.y + m[10] * p.z + m[11];
+    const Real w = m[12] * p.x + m[13] * p.y + m[14] * p.z + m[15];
+    if (std::abs(w) > static_cast<Real>(1e-12) && std::abs(w - static_cast<Real>(1)) > static_cast<Real>(1e-8)) {
+        return Vec3{ x / w, y / w, z / w };
+    }
+    return Vec3{ x, y, z };
+}
+
+template <typename Real>
+static bool InvertMatrix4(
+    const std::array<Real, 16>& m,
+    std::array<Real, 16>& inv)
+{
+    Real a[4][8]{};
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            a[row][col] = m[static_cast<size_t>(row * 4 + col)];
+        }
+        a[row][4 + row] = static_cast<Real>(1);
+    }
+
+    for (int col = 0; col < 4; ++col) {
+        int pivot = col;
+        Real pivotAbs = std::abs(a[col][col]);
+        for (int row = col + 1; row < 4; ++row) {
+            const Real candidate = std::abs(a[row][col]);
+            if (candidate > pivotAbs) {
+                pivot = row;
+                pivotAbs = candidate;
+            }
+        }
+        if (pivotAbs <= static_cast<Real>(1e-20)) {
+            return false;
+        }
+        if (pivot != col) {
+            for (int k = 0; k < 8; ++k) {
+                std::swap(a[pivot][k], a[col][k]);
+            }
+        }
+
+        const Real invPivot = static_cast<Real>(1) / a[col][col];
+        for (int k = 0; k < 8; ++k) {
+            a[col][k] *= invPivot;
+        }
+
+        for (int row = 0; row < 4; ++row) {
+            if (row == col) {
+                continue;
+            }
+            const Real f = a[row][col];
+            for (int k = 0; k < 8; ++k) {
+                a[row][k] -= f * a[col][k];
+            }
+        }
+    }
+
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            inv[static_cast<size_t>(row * 4 + col)] = a[row][4 + col];
+        }
+    }
+    return true;
 }
 
 template <typename Real>
@@ -379,6 +482,172 @@ void ElasticitySolverT<Real>::UpdateKinematicConstraints()
 }
 
 template <typename Real>
+void ElasticitySolverT<Real>::ClearSkeletonCoupling()
+{
+    h_skeletonBindings.clear();
+    h_skeletonTargets.clear();
+    h_skeletonTargetVelocities.clear();
+    h_skeletonWeights.clear();
+    h_skeletonRestInverseWorldMatrices.clear();
+    h_skeletonBindingCount = 0;
+    h_hasLastSkeletonTime = false;
+    h_lastSkeletonTime = Real(0);
+
+    if (d_skeleton_targets) {
+        CUDA_CHECK(cudaFree(d_skeleton_targets));
+        d_skeleton_targets = nullptr;
+    }
+    if (d_skeleton_target_velocities) {
+        CUDA_CHECK(cudaFree(d_skeleton_target_velocities));
+        d_skeleton_target_velocities = nullptr;
+    }
+    if (d_skeleton_weights) {
+        CUDA_CHECK(cudaFree(d_skeleton_weights));
+        d_skeleton_weights = nullptr;
+    }
+}
+
+template <typename Real>
+void ElasticitySolverT<Real>::BindSkeletonToTetMesh(
+    const SkeletonFrameT<Real>& restFrame,
+    Real maxDistance)
+{
+    if (h_vertex.empty()) {
+        throw std::runtime_error("BindSkeletonToTetMesh requires an initialized tetrahedral mesh.");
+    }
+    if (restFrame.bones.empty()) {
+        throw std::runtime_error("BindSkeletonToTetMesh received an empty skeleton frame.");
+    }
+
+    ClearSkeletonCoupling();
+
+    h_skeletonRestInverseWorldMatrices.resize(restFrame.bones.size());
+    for (size_t i = 0; i < restFrame.bones.size(); ++i) {
+        if (!InvertMatrix4<Real>(restFrame.bones[i].world_matrix, h_skeletonRestInverseWorldMatrices[i])) {
+            throw std::runtime_error("Failed to invert rest bone world matrix: " + restFrame.bones[i].name);
+        }
+    }
+
+    h_skeletonBindings.resize(h_vertex.size());
+    h_skeletonTargets.assign(h_vertex.size(), Vec3{ Real(0), Real(0), Real(0) });
+    h_skeletonTargetVelocities.assign(h_vertex.size(), Vec3{ Real(0), Real(0), Real(0) });
+    h_skeletonWeights.assign(h_vertex.size(), Real(0));
+
+    const bool useDistanceLimit = maxDistance > Real(0);
+    const Real maxDistance2 = maxDistance * maxDistance;
+    Real maxBoundDistance2 = Real(0);
+
+    for (size_t vertexID = 0; vertexID < h_vertex.size(); ++vertexID) {
+        const Vec3& x = h_vertex[vertexID];
+        int bestBone = -1;
+        Real bestDistance2 = std::numeric_limits<Real>::max();
+
+        for (size_t boneID = 0; boneID < restFrame.bones.size(); ++boneID) {
+            const auto& bone = restFrame.bones[boneID];
+            const Real distance2 = SegmentDistanceSquared<Real>(x, bone.head, bone.tail);
+            if (distance2 < bestDistance2) {
+                bestDistance2 = distance2;
+                bestBone = static_cast<int>(boneID);
+            }
+        }
+
+        if (bestBone < 0 || (useDistanceLimit && bestDistance2 > maxDistance2)) {
+            continue;
+        }
+
+        SkeletonVertexBinding binding;
+        binding.boneID = bestBone;
+        binding.restPosition = x;
+        binding.weight = Real(1);
+        if (useDistanceLimit) {
+            const Real distance = std::sqrt(std::max(bestDistance2, Real(0)));
+            binding.weight = std::max(Real(0), Real(1) - distance / maxDistance);
+        }
+
+        h_skeletonBindings[vertexID] = binding;
+        h_skeletonWeights[vertexID] = binding.weight;
+        ++h_skeletonBindingCount;
+        maxBoundDistance2 = std::max(maxBoundDistance2, bestDistance2);
+    }
+
+    if (h_skeletonBindingCount == 0) {
+        std::cout << "Skeleton binding created no tet-vertex attachments." << std::endl;
+        return;
+    }
+
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_skeleton_targets), h_vertex.size() * sizeof(Vec3)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_skeleton_target_velocities), h_vertex.size() * sizeof(Vec3)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_skeleton_weights), h_vertex.size() * sizeof(Real)));
+    CUDA_CHECK(cudaMemcpy(
+        d_skeleton_weights,
+        h_skeletonWeights.data(),
+        h_skeletonWeights.size() * sizeof(Real),
+        cudaMemcpyHostToDevice));
+
+    UpdateSkeletonCouplingTargets(restFrame);
+
+    std::cout << "Skeleton tet binding: " << h_skeletonBindingCount
+              << " / " << h_vertex.size()
+              << " vertices, max nearest-bone distance "
+              << std::sqrt(maxBoundDistance2) << std::endl;
+}
+
+template <typename Real>
+void ElasticitySolverT<Real>::UpdateSkeletonCouplingTargets(
+    const SkeletonFrameT<Real>& frame)
+{
+    if (h_skeletonBindingCount == 0) {
+        return;
+    }
+    if (frame.bones.size() != h_skeletonRestInverseWorldMatrices.size()) {
+        throw std::runtime_error("Skeleton frame bone count differs from the rest frame used for binding.");
+    }
+
+    Real updateDt = Real(0);
+    if (h_hasLastSkeletonTime) {
+        updateDt = frame.time_seconds - h_lastSkeletonTime;
+    }
+    if (updateDt <= Real(0)) {
+        updateDt = h_params.dt * static_cast<Real>(std::max(1u, h_params.substeps));
+    }
+
+    for (size_t vertexID = 0; vertexID < h_skeletonBindings.size(); ++vertexID) {
+        const auto& binding = h_skeletonBindings[vertexID];
+        if (binding.boneID < 0 || binding.weight <= Real(0)) {
+            h_skeletonTargets[vertexID] = h_vertex[vertexID];
+            h_skeletonTargetVelocities[vertexID] = Vec3{ Real(0), Real(0), Real(0) };
+            continue;
+        }
+
+        const size_t boneID = static_cast<size_t>(binding.boneID);
+        const Vec3 boneLocalRestPosition =
+            TransformPoint<Real>(h_skeletonRestInverseWorldMatrices[boneID], binding.restPosition);
+        const Vec3 target =
+            TransformPoint<Real>(frame.bones[boneID].world_matrix, boneLocalRestPosition);
+        const Vec3 previousTarget = h_skeletonTargets[vertexID];
+
+        h_skeletonTargets[vertexID] = target;
+        h_skeletonTargetVelocities[vertexID] = h_hasLastSkeletonTime
+            ? (target - previousTarget) / updateDt
+            : Vec3{ Real(0), Real(0), Real(0) };
+    }
+
+    h_lastSkeletonTime = frame.time_seconds;
+    h_hasLastSkeletonTime = true;
+
+    CUDA_CHECK(cudaMemcpy(
+        d_skeleton_targets,
+        h_skeletonTargets.data(),
+        h_skeletonTargets.size() * sizeof(Vec3),
+        cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(
+        d_skeleton_target_velocities,
+        h_skeletonTargetVelocities.data(),
+        h_skeletonTargetVelocities.size() * sizeof(Vec3),
+        cudaMemcpyHostToDevice));
+}
+
+template <typename Real>
 ElasticitySolverT<Real>::~ElasticitySolverT()
 {
     // Free GPU memory
@@ -390,6 +659,9 @@ ElasticitySolverT<Real>::~ElasticitySolverT()
     CUDA_CHECK(cudaFree(d_F));
     if (d_constraint_dof_flags) CUDA_CHECK(cudaFree(d_constraint_dof_flags));
     if (d_constraint_dof_targets) CUDA_CHECK(cudaFree(d_constraint_dof_targets));
+    if (d_skeleton_targets) CUDA_CHECK(cudaFree(d_skeleton_targets));
+    if (d_skeleton_target_velocities) CUDA_CHECK(cudaFree(d_skeleton_target_velocities));
+    if (d_skeleton_weights) CUDA_CHECK(cudaFree(d_skeleton_weights));
 
     const bool isImplicitGPU =
         (h_params.platformType == GPU) &&
@@ -777,6 +1049,15 @@ template void ElasticitySolverT<double>::RotateKinematicCylinderXKeepingLocalPoi
 
 template void ElasticitySolverT<float>::UpdateKinematicConstraints();
 template void ElasticitySolverT<double>::UpdateKinematicConstraints();
+
+template void ElasticitySolverT<float>::BindSkeletonToTetMesh(const SkeletonFrameT<float>&, float);
+template void ElasticitySolverT<double>::BindSkeletonToTetMesh(const SkeletonFrameT<double>&, double);
+
+template void ElasticitySolverT<float>::UpdateSkeletonCouplingTargets(const SkeletonFrameT<float>&);
+template void ElasticitySolverT<double>::UpdateSkeletonCouplingTargets(const SkeletonFrameT<double>&);
+
+template void ElasticitySolverT<float>::ClearSkeletonCoupling();
+template void ElasticitySolverT<double>::ClearSkeletonCoupling();
 
 template void ElasticitySolverT<float>::InitCUDALib();
 template void ElasticitySolverT<double>::InitCUDALib();

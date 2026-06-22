@@ -15,6 +15,7 @@ mono_crash.*
 build/
 .claude/
 .vscode/
+.agents/
 output/
 output_frame/
 Reference/

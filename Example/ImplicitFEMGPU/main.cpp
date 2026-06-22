@@ -45,7 +45,9 @@ int main()
     }
 
     while (!viewer.ShouldClose()) {
-        solver.AdvanceFrame(false);
+        if (!viewer.IsPaused()) {
+            solver.AdvanceFrame(false);
+        }
         viewer.UpdateFromCuda(solver.GetDeviceVertices(), solver.GetVertexCount());
         viewer.RenderFrame();
         viewer.PollEvents();

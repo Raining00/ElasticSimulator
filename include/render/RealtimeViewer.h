@@ -33,6 +33,7 @@ public:
     void UpdateFromCuda(const Vec3f* d_vertices, size_t vertex_count);
     void UpdateFromCuda(const Vec3d* d_vertices, size_t vertex_count);
     void RenderFrame();
+    bool IsPaused() const;
 
     CameraMode GetCameraMode() const;
 

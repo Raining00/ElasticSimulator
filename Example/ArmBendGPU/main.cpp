@@ -105,19 +105,22 @@ int main()
 
     int frame = 0;
     while (!viewer.ShouldClose()) {
-        if (frame < 250) {
-            solver.RotateKinematicCylinderXKeepingLocalPoint(
-                forearm,
-                static_cast<Scalar>(0.01),
-                { Scalar(0), static_cast<Scalar>(-0.25), Scalar(0) },
-                { Scalar(0), static_cast<Scalar>(1.03), Scalar(0) });
+        if (!viewer.IsPaused()) {
+            if (frame < 250) {
+                solver.RotateKinematicCylinderXKeepingLocalPoint(
+                    forearm,
+                    static_cast<Scalar>(0.01),
+                    { Scalar(0), static_cast<Scalar>(-0.25), Scalar(0) },
+                    { Scalar(0), static_cast<Scalar>(1.03), Scalar(0) });
+            }
+
+            solver.AdvanceFrame(false);
+            ++frame;
         }
 
-        solver.AdvanceFrame(false);
         viewer.UpdateFromCuda(solver.GetDeviceVertices(), solver.GetVertexCount());
         viewer.RenderFrame();
         viewer.PollEvents();
-        ++frame;
     }
 
     return 0;

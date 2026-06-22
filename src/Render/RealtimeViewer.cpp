@@ -116,6 +116,8 @@ struct RealtimeViewer<Real>::Impl
     float move_speed = 2.5f;
     bool key1_prev = false;
     bool key2_prev = false;
+    bool space_prev = false;
+    bool paused = true;
 
     std::chrono::steady_clock::time_point last_tick = std::chrono::steady_clock::now();
 
@@ -167,6 +169,15 @@ struct RealtimeViewer<Real>::Impl
 
         key1_prev = key1;
         key2_prev = key2;
+    }
+
+    void HandlePauseToggle()
+    {
+        const bool space = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+        if (space && !space_prev) {
+            paused = !paused;
+        }
+        space_prev = space;
     }
 
     void HandleFPSMovement(float dt)
@@ -239,6 +250,7 @@ struct RealtimeViewer<Real>::Impl
         dt = std::min(dt, 0.05f);
 
         HandleCameraSwitch();
+        HandlePauseToggle();
         HandleFPSMovement(dt);
     }
 
@@ -584,6 +596,12 @@ void RealtimeViewer<Real>::RenderFrame()
     glBindVertexArray(0);
 
     glfwSwapBuffers(impl_->window);
+}
+
+template <typename Real>
+bool RealtimeViewer<Real>::IsPaused() const
+{
+    return impl_->paused;
 }
 
 template <typename Real>

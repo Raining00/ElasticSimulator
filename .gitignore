@@ -23,3 +23,5 @@ blender/
 bin/
 __pycache__/
 imgui.ini
+.agents/
+BlenderOutput/

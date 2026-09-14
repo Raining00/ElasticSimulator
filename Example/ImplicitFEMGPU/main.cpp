@@ -23,14 +23,14 @@ int main()
     auto& p = solver.GetParameters();
     p.energyType = NEOHOOKEAN;
     p.solverType = IMPLICIT;
-    p.dt = 1e-3;
-    p.youngs_modulus = 1e6;
+    p.dt = 5e-3;
+    p.youngs_modulus = 1e5;
     p.poisson_ratio = 0.4;
     p.density = 1000;
-    p.substeps = 1;
+    p.substeps = 5;
 
-    //solver.Initialize(mesh);
-    solver.Initialize(PROJECT_SOURCE_DIR "/assets/ellell.1");
+    solver.Initialize(mesh);
+    //solver.Initialize(PROJECT_SOURCE_DIR "/assets/ellell.1");
     //solver.RotateVerticesAroundCentroidByEulerAngles({ Scalar(glm::radians(90.0)), Scalar(0.0), Scalar(0.0) });
     solver.SetInitialOffset({ Scalar(0), Scalar(1), Scalar(0)});
 

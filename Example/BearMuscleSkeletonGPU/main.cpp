@@ -89,9 +89,9 @@ int main(int argc, char** argv)
     p.platformType = GPU;
     p.substeps = 10;
     p.dt = static_cast<Scalar>(1) / (skeletonAnimation.Frame(0).fps * static_cast<Scalar>(p.substeps));
-    p.youngs_modulus = static_cast<Scalar>(2e5);
+    p.youngs_modulus = static_cast<Scalar>(1e5);
     p.poisson_ratio = static_cast<Scalar>(0.42);
-    p.density = static_cast<Scalar>(800);
+    p.density = static_cast<Scalar>(1000);
     p.damping = static_cast<Scalar>(0.01);
     p.gravity = { Scalar(0), Scalar(0), Scalar(0) };
     p.barrier_distance = static_cast<Scalar>(0.02);
